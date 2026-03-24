@@ -111,19 +111,44 @@ st.markdown("---")
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["Energy Overview", "Power Factor", "Peak Demand", "Load Heatmap", "Raw Data"])
 
+# ── Tab 1: Energy Overview ────────────────────────────────────────────────────
 with tab1:
     st.subheader("Energy profile — kW, kVA, kVAr & Max Demand")
     fig = go.Figure()
-    for col, dash in [
-        ("Total kW", "solid"),
-        ("Total kVA", "solid"),
-        ("Total kVAr", "solid"),
-        ("Max Demand kW", "dash"),
-    ]:
+
+    # kW split into normal (blue) and high-demand (red)
+    if "Total kW" in df.columns:
+        threshold = MIC * demand_warning_pct / 100
+        df["kW_normal"] = df["Total kW"].where(df["Total kW"] < threshold)
+        df["kW_high"] = df["Total kW"].where(df["Total kW"] >= threshold)
+
+        fig.add_trace(
+            go.Scatter(
+                x=df["timestamp"],
+                y=df["kW_normal"],
+                name="kW (normal)",
+                mode="lines",
+                line=dict(color="#3B82F6", width=2),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df["timestamp"],
+                y=df["kW_high"],
+                name="kW (high demand)",
+                mode="lines",
+                line=dict(color="#EF4444", width=3),
+            )
+        )
+
+    # Remaining traces
+    for col, dash in [("Total kVA", "solid"), ("Total kVAr", "solid"), ("Max Demand kW", "dash")]:
         if col in df.columns:
             fig.add_trace(
-                go.Scatter(x=df["timestamp"], y=df[col], name=col, mode="lines", line={"width": 2, "dash": dash})
+                go.Scatter(x=df["timestamp"], y=df[col], name=col, mode="lines", line=dict(width=2, dash=dash))
             )
+
+    # MIC and warning lines
     fig.add_hline(
         y=MIC,
         line_dash="dot",
@@ -139,21 +164,62 @@ with tab1:
         annotation_text=f"Warning {demand_warning_pct}%",
         annotation_position="bottom right",
     )
+
+    # Shaded background regions where kW > threshold
+    if "Total kW" in df.columns:
+        in_region = False
+        region_start = None
+
+        for ts, flag in zip(df["timestamp"], df["Total kW"] >= threshold):
+            if flag and not in_region:
+                region_start = ts
+                in_region = True
+            elif not flag and in_region:
+                fig.add_vrect(
+                    x0=region_start,
+                    x1=ts,
+                    fillcolor="red",
+                    opacity=0.10,
+                    layer="below",
+                    line_width=0,
+                    annotation_text="High demand",
+                    annotation_position="top left",
+                    annotation_font_size=10,
+                    annotation_font_color="red",
+                )
+                in_region = False
+
+        # Close any open region at end of data
+        if in_region:
+            fig.add_vrect(
+                x0=region_start,
+                x1=df["timestamp"].iloc[-1],
+                fillcolor="red",
+                opacity=0.10,
+                layer="below",
+                line_width=0,
+                annotation_text="High demand",
+                annotation_position="top left",
+                annotation_font_size=10,
+                annotation_font_color="red",
+            )
+
     fig.update_layout(
-        xaxis={"title": "Timestamp"},
-        yaxis={"title": "Power (kW / kVA / kVAr)"},
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "center", "x": 0.5},
+        xaxis=dict(title="Timestamp"),
+        yaxis=dict(title="Power (kW / kVA / kVAr)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True)
 
+# ── Tab 2: Power Factor ───────────────────────────────────────────────────────
 with tab2:
     if "Average PF" in df.columns:
         st.subheader("Power factor over time")
         fig2 = go.Figure()
         fig2.add_trace(
             go.Scatter(
-                x=df["timestamp"], y=df["Average PF"], mode="lines", fill="tozeroy", name="Avg PF", line={"width": 2}
+                x=df["timestamp"], y=df["Average PF"], mode="lines", fill="tozeroy", name="Avg PF", line=dict(width=2)
             )
         )
         fig2.add_hline(
@@ -164,8 +230,8 @@ with tab2:
             annotation_position="top left",
         )
         fig2.update_layout(
-            xaxis={"title": "Timestamp"},
-            yaxis={"title": "Power Factor", "range": [0.6, 1.05], "dtick": 0.05},
+            xaxis=dict(title="Timestamp"),
+            yaxis=dict(title="Power Factor", range=[0.6, 1.05], dtick=0.05),
             hovermode="x unified",
         )
         st.plotly_chart(fig2, use_container_width=True)
@@ -175,7 +241,10 @@ with tab2:
         fig_hist.add_vline(x=pf_target, line_dash="dot", line_color="orange", annotation_text=f"Target {pf_target}")
         fig_hist.update_layout(xaxis_title="Power Factor", yaxis_title="Count")
         st.plotly_chart(fig_hist, use_container_width=True)
+    else:
+        st.info("Average PF data not available.")
 
+# ── Tab 3: Peak Demand ────────────────────────────────────────────────────────
 with tab3:
     if "Total kW" in df.columns:
         st.subheader("Hourly peak demand vs MIC")
@@ -200,9 +269,9 @@ with tab3:
             annotation_text=f"Warning {demand_warning_pct}%",
         )
         fig3.update_layout(
-            xaxis={"title": "Hour of Day", "dtick": 1},
-            yaxis={"title": "Peak kW", "range": [0, MIC * 1.15], "dtick": 50},
-            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "center", "x": 0.5},
+            xaxis=dict(title="Hour of Day", dtick=1),
+            yaxis=dict(title="Peak kW", range=[0, MIC * 1.15], dtick=50),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
         )
         st.plotly_chart(fig3, use_container_width=True)
 
@@ -211,7 +280,7 @@ with tab3:
         fig4 = go.Figure()
         fig4.add_trace(
             go.Scatter(
-                x=df["timestamp"], y=df["MIC %"], mode="lines", fill="tozeroy", name="Demand % MIC", line={"width": 2}
+                x=df["timestamp"], y=df["MIC %"], mode="lines", fill="tozeroy", name="Demand % MIC", line=dict(width=2)
             )
         )
         fig4.add_hline(y=100, line_dash="dot", line_color="red", annotation_text="MIC 100%")
@@ -219,12 +288,15 @@ with tab3:
             y=demand_warning_pct, line_dash="dot", line_color="orange", annotation_text=f"Warning {demand_warning_pct}%"
         )
         fig4.update_layout(
-            xaxis={"title": "Timestamp"},
-            yaxis={"title": "% of MIC", "range": [0, 115], "dtick": 10},
+            xaxis=dict(title="Timestamp"),
+            yaxis=dict(title="% of MIC", range=[0, 115], dtick=10),
             hovermode="x unified",
         )
         st.plotly_chart(fig4, use_container_width=True)
+    else:
+        st.info("Total kW data not available.")
 
+# ── Tab 4: Load Heatmap ───────────────────────────────────────────────────────
 with tab4:
     if "Total kW" in df.columns:
         st.subheader("Load heatmap — avg kW by hour and day")
@@ -236,12 +308,15 @@ with tab4:
                 pivot,
                 aspect="auto",
                 color_continuous_scale="RdYlGn_r",
-                labels={"x": "Hour of Day", "y": "Date", "color": "Avg kW"},
+                labels=dict(x="Hour of Day", y="Date", color="Avg kW"),
             )
             st.plotly_chart(fig5, use_container_width=True)
         else:
             st.info("Upload more than one day of data to see the heatmap.")
+    else:
+        st.info("Total kW data not available.")
 
+# ── Tab 5: Raw Data ───────────────────────────────────────────────────────────
 with tab5:
     col_a, col_b = st.columns(2)
     with col_a:
@@ -250,6 +325,7 @@ with tab5:
     with col_b:
         st.subheader("Pivoted (wide) data")
         st.dataframe(df, use_container_width=True)
+
     st.download_button(
         "Download pivoted data as CSV",
         data=df.to_csv(index=False).encode("utf-8"),
