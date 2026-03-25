@@ -182,7 +182,7 @@ with tab1:
                     opacity=0.10,
                     layer="below",
                     line_width=0,
-                    annotation_text="High demand",
+                    annotation_text="⚠️",
                     annotation_position="top left",
                     annotation_font_size=10,
                     annotation_font_color="red",
