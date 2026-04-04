@@ -1,3 +1,7 @@
-pandas==2.3.3
+matplotlib==3.10.8
+pandas==3.0.2
 plotly==6.6.0
-streamlit==1.55.0
+streamlit==1.56.0
+statsmodels==0.14.6
+reportlab==4.2.5
+kaleido==0.2.1
