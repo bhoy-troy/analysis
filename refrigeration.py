@@ -1,332 +1,355 @@
-from dataclasses import dataclass
+"""
+Supermarket Cabinet Temperature Analysis System
+Multi-Page Streamlit Application - Main Entry Point
+"""
 
-import numpy as np
+import logging
+from datetime import datetime, timedelta
+
 import pandas as pd
 import streamlit as st
 
-
-@dataclass
-class PullDownResult:
-    pull_down_time_min: float | None
-    start_temp: float | None
-    end_temp: float | None
-
-
-@dataclass
-class StabilityResult:
-    mean_temp: float
-    std_temp: float
-
-
-@dataclass
-class SetpointAdherenceResult:
-    fraction_in_band: float
-    minutes_in_band: float
-
-
-@dataclass
-class WarmupResult:
-    warmup_rate_c_per_min: float | None
-
-
-@dataclass
-class DisturbanceRecoveryResult:
-    avg_peak_rise_c: float | None
-    median_recovery_time_min: float | None
-    n_events: int
-
-
-@dataclass
-class PerformanceIndex:
-    index: float | None
-
-
-def compute_pull_down(df: pd.DataFrame, setpoint: float, band: float) -> PullDownResult:
-    temps = df["temperature"].values
-    times = df["timestamp"].values
-    if len(temps) == 0:
-        return PullDownResult(None, None, None)
-    start_temp = float(temps[0])
-    target = setpoint + band
-    idx = np.where(temps <= target)[0]
-    if len(idx) == 0:
-        return PullDownResult(None, start_temp, None)
-    t0 = pd.Timestamp(times[0])
-    t_target = pd.Timestamp(times[idx[0]])
-    pull_down_time = (t_target - t0).total_seconds() / 60.0
-    return PullDownResult(pull_down_time, start_temp, float(temps[idx[0]]))
-
-
-def compute_stability(df: pd.DataFrame) -> StabilityResult:
-    temps = df["temperature"].values
-    return StabilityResult(float(np.mean(temps)), float(np.std(temps)))
-
-
-def compute_setpoint_adherence(df: pd.DataFrame, setpoint: float, band: float) -> SetpointAdherenceResult:
-    temps = df["temperature"].values
-    times = df["timestamp"].values
-    lower = setpoint - band
-    upper = setpoint + band
-    in_band = (temps >= lower) & (temps <= upper)
-    if len(times) < 2:
-        return SetpointAdherenceResult(0.0, 0.0)
-    dt_minutes = np.median(np.diff(times).astype("timedelta64[s]").astype(float)) / 60.0
-    minutes_in_band = float(in_band.sum() * dt_minutes)
-    fraction_in_band = float(in_band.mean())
-    return SetpointAdherenceResult(fraction_in_band, minutes_in_band)
-
-
-def detect_warmup_segment(df: pd.DataFrame, window_min: int = 60) -> pd.DataFrame | None:
-    if len(df) < 3:
-        return None
-    temps = df["temperature"].values
-    times = df["timestamp"].values
-    dt_minutes = np.median(np.diff(times).astype("timedelta64[s]").astype(float)) / 60.0
-    if dt_minutes <= 0:
-        return None
-    n_window = int(window_min / dt_minutes)
-    if n_window < 3 or n_window > len(df):
-        return None
-    best_start, best_end = None, None
-    current_start = 0
-    for i in range(1, len(temps)):
-        if temps[i] <= temps[i - 1]:
-            if (i - current_start >= n_window and best_start is None) or (i - 1 - current_start) > (
-                best_end - best_start
-            ):
-                best_start, best_end = current_start, i - 1
-            current_start = i
-    if (len(temps) - current_start >= n_window and best_start is None) or (len(temps) - 1 - current_start) > (
-        best_end - best_start
-    ):
-        best_start, best_end = current_start, len(temps) - 1
-    if best_start is None or best_end is None:
-        return None
-    return df.iloc[best_start : best_end + 1].copy()
-
-
-def compute_warmup_rate(df: pd.DataFrame, window_min: int = 60) -> WarmupResult:
-    seg = detect_warmup_segment(df, window_min=window_min)
-    if seg is None or len(seg) < 3:
-        return WarmupResult(None)
-    temps = seg["temperature"].values
-    times = seg["timestamp"].values
-    t0 = times[0]
-    t_minutes = np.array([(t - t0).astype("timedelta64[s]").astype(float) / 60.0 for t in times])
-    coeffs = np.polyfit(t_minutes, temps, 1)
-    return WarmupResult(float(coeffs[0]))
-
-
-def detect_disturbances(df: pd.DataFrame, threshold_c: float = 2.0, min_gap_min: float = 10.0) -> list[tuple[int, int]]:
-    temps = df["temperature"].values
-    times = df["timestamp"].values
-    if len(temps) < 3:
-        return []
-    dt_minutes = np.median(np.diff(times).astype("timedelta64[s]").astype(float)) / 60.0
-    if dt_minutes <= 0:
-        return []
-    min_gap_steps = int(min_gap_min / dt_minutes)
-    events: list[tuple[int, int]] = []
-    last_end = -min_gap_steps
-    baseline = pd.Series(temps).rolling(window=30, min_periods=10).median().to_numpy()
-    i = 1
-    while i < len(temps):
-        if temps[i] - baseline[i] >= threshold_c and i - last_end >= min_gap_steps:
-            start = i
-            peak_idx = i
-            while i + 1 < len(temps) and temps[i + 1] >= temps[i]:
-                i += 1
-                if temps[i] > temps[peak_idx]:
-                    peak_idx = i
-            while i + 1 < len(temps) and temps[i] - baseline[i] > 0.5:
-                i += 1
-            end = i
-            events.append((start, end))
-            last_end = end
-        i += 1
-    return events
-
-
-def compute_disturbance_recovery(df: pd.DataFrame, threshold_c: float = 2.0) -> DisturbanceRecoveryResult:
-    events = detect_disturbances(df, threshold_c=threshold_c)
-    if not events:
-        return DisturbanceRecoveryResult(None, None, 0)
-    temps = df["temperature"].values
-    times = df["timestamp"].values
-    baseline = pd.Series(temps).rolling(window=30, min_periods=10).median().to_numpy()
-    peak_rises = []
-    recovery_times = []
-    for start, end in events:
-        local_baseline = baseline[start]
-        peak_temp = temps[start : end + 1].max()
-        peak_rises.append(peak_temp - local_baseline)
-        t_start = pd.Timestamp(times[start])
-        t_end = pd.Timestamp(times[end])
-        recovery_times.append((t_end - t_start).total_seconds() / 60.0)
-    avg_peak_rise = float(np.mean(peak_rises)) if peak_rises else None
-    median_recovery = float(np.median(recovery_times)) if recovery_times else None
-    return DisturbanceRecoveryResult(avg_peak_rise, median_recovery, len(events))
-
-
-def compute_performance_index(
-    stability: StabilityResult,
-    adherence: SetpointAdherenceResult,
-    warmup: WarmupResult,
-    disturbance: DisturbanceRecoveryResult,
-) -> PerformanceIndex:
-    std_norm = min(max(1.0 - stability.std_temp / 2.0, 0.0), 1.0)
-    adherence_norm = min(max(adherence.fraction_in_band, 0.0), 1.0)
-    warm_norm = (
-        0.5
-        if warmup.warmup_rate_c_per_min is None
-        else min(max(1.0 - (warmup.warmup_rate_c_per_min - 0.01) / 0.09, 0.0), 1.0)
-    )
-    dist_norm = (
-        0.5
-        if disturbance.median_recovery_time_min is None
-        else min(max(1.0 - (disturbance.median_recovery_time_min - 5.0) / 55.0, 0.0), 1.0)
-    )
-    weights = np.array([0.3, 0.3, 0.2, 0.2])
-    comps = np.array([std_norm, adherence_norm, warm_norm, dist_norm])
-    return PerformanceIndex(float(np.dot(weights, comps)))
-
-
-# ── Page setup ────────────────────────────────────────────────────────────────
-
-st.set_page_config(page_title="Cold Storage Performance", layout="wide")
-st.title("Cold Storage Performance Dashboard")
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-
-st.sidebar.header("Configuration")
-unit_type = st.sidebar.selectbox("Unit type", ["Freezer", "Fridge"])
-setpoint = st.sidebar.number_input("Setpoint (°C)", value=-18.0 if unit_type == "Freezer" else 4.0, step=0.5)
-band = st.sidebar.number_input("Band ± (°C)", value=1.0, step=0.1)
-warmup_window = st.sidebar.number_input("Warm-up window (min)", value=60, step=5)
-dist_threshold = st.sidebar.number_input("Disturbance threshold (°C)", value=2.0, step=0.5)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**CSV format required:**\n```\ntimestamp,temperature\n2025-01-01T00:00:00,5.2\n```")
-
-# ── File upload ───────────────────────────────────────────────────────────────
-
-uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
-
-if uploaded_file is None:
-    st.info("Upload a CSV file with `timestamp` and `temperature` columns to get started.")
-    st.stop()
-
-df = pd.read_csv(uploaded_file)
-
-if "timestamp" not in df.columns or "temperature" not in df.columns:
-    st.error("CSV must contain 'timestamp' and 'temperature' columns.")
-    st.stop()
-
-df["timestamp"] = pd.to_datetime(df["timestamp"])
-df = df.sort_values("timestamp").dropna(subset=["temperature"]).reset_index(drop=True)
-
-# ── Compute metrics ───────────────────────────────────────────────────────────
-
-pull = compute_pull_down(df, setpoint, band)
-stab = compute_stability(df)
-adh = compute_setpoint_adherence(df, setpoint, band)
-warm = compute_warmup_rate(df, window_min=int(warmup_window))
-dist = compute_disturbance_recovery(df, threshold_c=dist_threshold)
-perf = compute_performance_index(stab, adh, warm, dist)
-
-# ── Header summary ────────────────────────────────────────────────────────────
-
-st.subheader(f"{unit_type} — {uploaded_file.name}")
-st.caption(
-    f"Setpoint: {setpoint} °C  |  Band: ±{band} °C  |  "
-    f"Records: {len(df):,}  |  "
-    f"From: {df['timestamp'].min().strftime('%Y-%m-%d %H:%M')}  "
-    f"To: {df['timestamp'].max().strftime('%Y-%m-%d %H:%M')}"
+from utils.refrigeration import (
+    RefrigerationAPIError,
+    get_cabinet_readings,
+    get_premises,
+    get_units_for_premises,
 )
 
-# ── KPI tiles ─────────────────────────────────────────────────────────────────
-
-c1, c2, c3, c4, c5 = st.columns(5)
-
-with c1:
-    st.metric(
-        "Performance index",
-        "N/A" if perf.index is None else f"{perf.index:.3f}",
-        help="Composite 0-1 score (higher is better)",
-    )
-with c2:
-    st.metric("Mean temp (°C)", f"{stab.mean_temp:.2f}")
-    st.metric("Std dev (°C)", f"{stab.std_temp:.2f}")
-with c3:
-    st.metric("In-band time", f"{adh.fraction_in_band * 100:.1f}%")
-    st.metric("Minutes in band", f"{adh.minutes_in_band:.0f}")
-with c4:
-    st.metric("Pull-down time (min)", "N/A" if pull.pull_down_time_min is None else f"{pull.pull_down_time_min:.1f}")
-    st.metric("Start temp (°C)", "N/A" if pull.start_temp is None else f"{pull.start_temp:.1f}")
-with c5:
-    st.metric("Disturbance events", dist.n_events)
-    st.metric(
-        "Median recovery (min)",
-        "N/A" if dist.median_recovery_time_min is None else f"{dist.median_recovery_time_min:.1f}",
-    )
-
-# ── Temperature chart ─────────────────────────────────────────────────────────
-
-st.subheader("Temperature over time")
-st.line_chart(df.set_index("timestamp")["temperature"])
-
-# ── Warm-up rate ──────────────────────────────────────────────────────────────
-
-st.subheader("Insulation / warm-up rate")
-if warm.warmup_rate_c_per_min is not None:
-    st.metric("Warm-up rate (°C/min)", f"{warm.warmup_rate_c_per_min:.4f}")
-    st.caption("Lower = better insulation and door seals")
-else:
-    st.info("No clear warm-up segment detected in this dataset.")
-
-# ── Disturbance detail ────────────────────────────────────────────────────────
-
-st.subheader("Disturbance events")
-if dist.n_events > 0:
-    d1, d2, d3 = st.columns(3)
-    d1.metric("Events detected", dist.n_events)
-    d2.metric("Avg peak rise (°C)", "N/A" if dist.avg_peak_rise_c is None else f"{dist.avg_peak_rise_c:.2f}")
-    d3.metric(
-        "Median recovery (min)",
-        "N/A" if dist.median_recovery_time_min is None else f"{dist.median_recovery_time_min:.1f}",
-    )
-else:
-    st.info(f"No disturbance events detected above {dist_threshold} °C threshold.")
-
-# ── Raw data + export ─────────────────────────────────────────────────────────
-
-with st.expander("Raw data preview"):
-    st.dataframe(df, use_container_width=True)
-
-st.download_button(
-    label="Download metrics summary as CSV",
-    data=pd.DataFrame(
-        [
-            {
-                "unit_type": unit_type,
-                "file": uploaded_file.name,
-                "setpoint_c": setpoint,
-                "band_c": band,
-                "mean_temp_c": stab.mean_temp,
-                "std_temp_c": stab.std_temp,
-                "in_band_pct": adh.fraction_in_band * 100,
-                "minutes_in_band": adh.minutes_in_band,
-                "pull_down_min": pull.pull_down_time_min,
-                "warmup_rate_c_per_min": warm.warmup_rate_c_per_min,
-                "disturbance_events": dist.n_events,
-                "avg_peak_rise_c": dist.avg_peak_rise_c,
-                "median_recovery_min": dist.median_recovery_time_min,
-                "performance_index": perf.index,
-            }
-        ]
-    )
-    .to_csv(index=False)
-    .encode("utf-8"),
-    file_name="metrics_summary.csv",
-    mime="text/csv",
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("app.log"), logging.StreamHandler()],
 )
+logger = logging.getLogger(__name__)
+
+st.set_page_config(
+    page_title="Supermarket Cabinet Temperature Analysis",
+    page_icon="🏪",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+@st.cache_data(ttl=3600 * 24)
+def load_premises():
+    """Load premises from API with caching"""
+    logger.info("Loading premises from API")
+    try:
+        premises = get_premises()
+        logger.info(f"Loaded {len(premises)} premises (cached for 1 hour)")
+        return premises
+    except RefrigerationAPIError as e:
+        logger.error(f"Failed to load premises: {e}")
+        st.error(f"Failed to load premises: {e}")
+        return []
+
+
+@st.cache_data(ttl=3600 * 24)
+def load_units(premises_id):
+    """Load units for selected premises with caching"""
+    logger.info(f"Loading units for premises {premises_id}")
+    try:
+        units = get_units_for_premises(premises_id)
+        logger.info(f"Loaded {len(units)} units for premises {premises_id} (cached for 30 minutes)")
+        return units
+    except RefrigerationAPIError as e:
+        logger.error(f"Failed to load units for premises {premises_id}: {e}")
+        st.error(f"Failed to load units: {e}")
+        return []
+
+
+@st.cache_data(ttl=3600)
+def load_readings_for_unit(unit_id, sensors, unit_description, start_dt, end_dt):
+    """Load readings for a single unit with caching"""
+    logger.info(f"Loading readings for unit {unit_id}:{sensors} ({unit_description}) from {start_dt} to {end_dt}")
+
+    try:
+        # readings = get_cabinet_readings(unit_id, start_dt, end_dt, sensors)
+        # logger.debug(f"Received {len(readings)} raw readings for {unit_id}")
+
+        # Convert readings to standardized format
+        readings_data = []
+        for readings in get_cabinet_readings(unit_id, start_dt, end_dt, sensors):
+            readings_data.extend(
+                [
+                    {
+                        "unit": reading.get("unit"),
+                        "value": reading.get("readings").get(reading.get("id").split("-")[-1]),
+                        "id": reading.get("id"),
+                        "timestamp": reading.get("timestamp"),
+                        # Add columns expected by the rest of the app
+                        "temperature_celsius": float(reading.get("readings").get(reading.get("id").split("-")[-1])),
+                        "cabinet": unit_description,
+                        "name_label": f"{unit_description}_temperature",
+                        "unit_id": unit_id,
+                    }
+                    for reading in readings
+                ]
+            )
+
+        if readings_data:
+            df = pd.DataFrame(readings_data)
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s")
+            logger.info(f"Converted {len(df)} readings for {unit_description} (cached for 1 hour)")
+            return df
+
+        logger.warning(f"No valid readings found for {unit_description}")
+        return pd.DataFrame()
+
+    except (RefrigerationAPIError, ValueError) as e:
+        logger.error(f"Failed to load readings for {unit_description}: {e}")
+        st.error(f"Failed to load readings for {unit_description}: {e}")
+        return pd.DataFrame()
+
+
+def load_all_readings(units, start_dt, end_dt):
+    """Load readings for all selected units"""
+    logger.info(f"Loading readings for {len(units)} units from {start_dt} to {end_dt}")
+    all_data = []
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    for idx, unit in enumerate(units):
+        unit_id = unit.get("unit_id")
+        unit_desc = unit.get("description", unit_id)
+        sensors = unit.get("sensors", [])
+
+        logger.debug(f"Loading unit {idx + 1}/{len(units)}: {unit_desc} ({unit_id})")
+        status_text.text(f"Loading {unit_desc}... ({idx + 1}/{len(units)})")
+        # import pdb
+        # pdb.set_trace(
+        #
+        # )
+
+        df = load_readings_for_unit(unit_id, sensors, unit_desc, start_dt, end_dt)
+        if not df.empty:
+            all_data.append(df)
+            logger.debug(f"Added {len(df)} readings for {unit_desc}")
+        else:
+            logger.warning(f"No data loaded for {unit_desc}")
+
+        progress_bar.progress((idx + 1) / len(units))
+
+    progress_bar.empty()
+    status_text.empty()
+
+    if all_data:
+        combined_df = pd.concat(all_data, ignore_index=True)
+        combined_df = combined_df.sort_values(["cabinet", "timestamp"])
+        combined_df["date"] = combined_df["timestamp"].dt.date
+        combined_df["week"] = combined_df["timestamp"].dt.isocalendar().week
+        combined_df["year"] = combined_df["timestamp"].dt.year
+        logger.info(f"Successfully loaded {len(combined_df)} total readings from {len(all_data)} units")
+        return combined_df
+
+    logger.warning("No data loaded for any units")
+    return pd.DataFrame()
+
+
+# Initialize session state
+if "data_loaded" not in st.session_state:
+    st.session_state.data_loaded = False
+if "df" not in st.session_state:
+    st.session_state.df = pd.DataFrame()
+if "selected_cabinet" not in st.session_state:
+    st.session_state.selected_cabinet = None
+
+# Main page content
+st.title("🏪 Supermarket Cabinet Temperature Analysis")
+st.markdown("### Comprehensive Temperature Monitoring & Analysis System")
+
+# Data Selection Sidebar
+with st.sidebar:
+    st.header("📍 Data Selection")
+
+    # Load premises
+    premises_list = load_premises()
+
+    if not premises_list:
+        st.error("No premises available. Check API configuration.")
+        st.info("Set REFRIGERATION_API_HOST and REFRIGERATION_API_TOKEN in .env")
+        st.stop()
+
+    # Premises selection
+    premises_options = {f"{p.get('name', p.get('id', 'Unknown'))} (ID: {p.get('id')})": p for p in premises_list}
+    selected_premises_label = st.selectbox(
+        "Select Premises", options=list(premises_options.keys()), help="Choose premises to analyze"
+    )
+    selected_premises = premises_options[selected_premises_label]
+
+    st.markdown("---")
+
+    # Date range selection
+    st.header("📅 Time Range")
+
+    default_end = datetime.now()
+    default_start = default_end - timedelta(days=7)
+
+    start_date = st.date_input("Start Date", value=default_start.date(), max_value=datetime.now().date())
+
+    start_time = st.time_input("Start Time", value=default_start.time())
+
+    end_date = st.date_input("End Date", value=default_end.date(), max_value=datetime.now().date())
+
+    end_time = st.time_input("End Time", value=default_end.time())
+
+    start_datetime = datetime.combine(start_date, start_time)
+    end_datetime = datetime.combine(end_date, end_time)
+
+    date_range_days = (end_datetime - start_datetime).days
+
+    if date_range_days > 31:
+        st.error("⚠️ Date range cannot exceed 31 days")
+        st.stop()
+    elif date_range_days < 0:
+        st.error("⚠️ End date must be after start date")
+        st.stop()
+
+    st.info(f"📊 Range: {date_range_days} days")
+
+    st.markdown("---")
+
+    # Load Data Button
+    if st.button("🔄 Load Data", type="primary", use_container_width=True):
+        logger.info(
+            f"User clicked 'Load Data' for premises {selected_premises.get('id')} ({selected_premises.get('name')})"
+        )
+        logger.info(f"Date range: {start_datetime} to {end_datetime} ({date_range_days} days)")
+
+        with st.spinner("Loading units..."):
+            units = load_units(selected_premises.get("id"))
+
+        if not units:
+            logger.warning(f"No units found for premises {selected_premises.get('id')}")
+            st.error("No units found for this premises")
+            st.stop()
+
+        logger.info(f"Found {len(units)} units for premises {selected_premises.get('id')}")
+        st.success(f"Found {len(units)} units")
+
+        with st.spinner("Loading temperature data..."):
+            df = load_all_readings(units, start_datetime, end_datetime)
+
+        if df.empty:
+            logger.warning(
+                f"No data found for premises {selected_premises.get('id')} in date range {start_datetime} to {end_datetime}"
+            )
+            st.error("No data found for selected time range")
+            st.stop()
+
+        logger.info(f"Successfully loaded {len(df)} readings for {df['cabinet'].nunique()} cabinets")
+        st.session_state.df = df
+        st.session_state.data_loaded = True
+        st.session_state.premises_name = selected_premises.get("name", "Unknown")
+        st.session_state.start_datetime = start_datetime
+        st.session_state.end_datetime = end_datetime
+        logger.info("Data stored in session state, triggering rerun")
+        st.rerun()
+
+    if st.session_state.data_loaded:
+        st.success("✅ Data loaded")
+        st.caption(f"📍 {st.session_state.get('premises_name', 'Unknown')}")
+        st.caption(f"📊 {len(st.session_state.df):,} readings")
+
+# Main content area
+if not st.session_state.data_loaded:
+    st.info("👈 Select premises and date range, then click 'Load Data' to begin analysis")
+    st.markdown("---")
+    st.markdown("### 🚀 Getting Started")
+    st.markdown("""
+    1. **Select a Premises** from the sidebar dropdown
+    2. **Choose Date Range** (up to 31 days)
+    3. **Click 'Load Data'** to fetch temperature readings
+    4. **Navigate** to different analysis pages using the sidebar
+    """)
+    st.stop()
+
+# Data is loaded - show overview
+df = st.session_state.df
+
+st.success(f"✅ Loaded {len(df):,} temperature readings from {df['cabinet'].nunique()} cabinets")
+st.info(
+    f"📅 Data range: {df['timestamp'].min().strftime('%Y-%m-%d %H:%M')} to {df['timestamp'].max().strftime('%Y-%m-%d %H:%M')}"
+)
+
+# Cabinet selection
+st.markdown("---")
+st.subheader("📊 Select Cabinet for Analysis")
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    cabinet_type = st.radio("Filter by Cabinet Type", ["All", "Freezers", "Chillers", "M&P", "Other"], horizontal=True)
+
+if cabinet_type == "Freezers":
+    available_cabinets = df[df["cabinet"].str.contains("Freezer", case=False, na=False)]["cabinet"].unique()
+elif cabinet_type == "Chillers":
+    available_cabinets = df[df["cabinet"].str.contains("Chiller", case=False, na=False)]["cabinet"].unique()
+elif cabinet_type == "M&P":
+    available_cabinets = df[df["cabinet"].str.contains("M&P", case=False, na=False)]["cabinet"].unique()
+elif cabinet_type == "Other":
+    available_cabinets = df[~df["cabinet"].str.contains("Freezer|Chiller|M&P", case=False, na=False)][
+        "cabinet"
+    ].unique()
+else:
+    available_cabinets = df["cabinet"].unique()
+
+if len(available_cabinets) == 0:
+    st.warning("No cabinets match the selected filter")
+    st.stop()
+
+selected_cabinet = st.selectbox("Choose a cabinet", sorted(available_cabinets), index=0)
+
+# Store selected cabinet in session state
+if "selected_cabinet" not in st.session_state or st.session_state.selected_cabinet != selected_cabinet:
+    logger.info(f"User selected cabinet: {selected_cabinet}")
+
+st.session_state.selected_cabinet = selected_cabinet
+st.session_state.is_freezer = "freezer" in str(selected_cabinet).lower()
+
+# Quick stats for selected cabinet
+st.markdown("---")
+st.subheader(f"Quick Stats: {selected_cabinet}")
+
+cabinet_df = df[df["cabinet"] == selected_cabinet]
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric("Total Readings", f"{len(cabinet_df):,}")
+with col2:
+    avg_temp = cabinet_df["temperature_celsius"].mean()
+    st.metric("Average Temperature", f"{avg_temp:.2f}°C")
+with col3:
+    min_temp = cabinet_df["temperature_celsius"].min()
+    st.metric("Min Temperature", f"{min_temp:.2f}°C")
+with col4:
+    max_temp = cabinet_df["temperature_celsius"].max()
+    st.metric("Max Temperature", f"{max_temp:.2f}°C")
+
+# Navigation guide
+st.markdown("---")
+st.markdown("### 📖 Navigation Guide")
+
+st.markdown("""
+**Use the sidebar to navigate to different analysis pages:**
+
+- **📊 Overview** - Temperature distribution, daily statistics, and summary metrics
+- **🔄 Cooling Cycles** - Compressor on/off cycle analysis and patterns
+- **❄️ Defrost Cycles** - Defrost event detection and recovery time analysis
+- **📈 Temperature Trends** - Time-series visualization and hourly patterns
+- **🎯 Time-in-Range** - Food safety compliance and temperature range analysis
+- **🏥 Health Score** - Predictive maintenance and equipment health monitoring
+- **🔍 Multi-Cabinet Comparison** - Fleet-wide performance comparison
+- **📄 PDF Reports** - Generate comprehensive reports for single or multiple cabinets
+
+---
+*Select a page from the sidebar to begin your analysis →*
+""")
+
+# Footer
+st.markdown("---")
+st.caption("🔬 Supermarket Cabinet Temperature Analysis System | Powered by Streamlit")
