@@ -1,13 +1,16 @@
 """PDF Report Generation page"""
 
-import streamlit as st
-from datetime import datetime
 import sys
-sys.path.append('..')
+from datetime import datetime
+
+import streamlit as st
+
+sys.path.append("..")
 
 # Import PDF generation functions from the original app file
 # (These functions are still in app_cobh_analysis.py)
 import importlib.util
+
 spec = importlib.util.spec_from_file_location("pdf_funcs", "app_cobh_analysis.py")
 pdf_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pdf_module)
@@ -16,8 +19,9 @@ st.title("📄 PDF Reports")
 st.markdown("**Generate Comprehensive Reports**")
 
 # Get data from session state
-if 'df' not in st.session_state:
-    st.warning("⚠️ Please return to the main page first")
+if "df" not in st.session_state or st.session_state.df.empty:
+    st.warning("⚠️ No data loaded. Please return to the main page and load data first.")
+    st.info("1. Select a premises\n2. Choose date range\n3. Click 'Load Data'")
     st.stop()
 
 df = st.session_state.df
@@ -28,13 +32,13 @@ tab1, tab2 = st.tabs(["Single Cabinet Report", "Multi-Cabinet Comparison Report"
 with tab1:
     st.subheader("Generate Single Cabinet Report")
 
-    if 'selected_cabinet' in st.session_state:
+    if "selected_cabinet" in st.session_state:
         selected_cabinet = st.session_state.selected_cabinet
         is_freezer = st.session_state.is_freezer
 
         st.info(f"📊 Selected Cabinet: **{selected_cabinet}**")
 
-        cabinet_df = df[df['cabinet'] == selected_cabinet]
+        cabinet_df = df[df["cabinet"] == selected_cabinet]
 
         if st.button("🔄 Generate PDF Report", key="single", use_container_width=True):
             with st.spinner("Generating comprehensive PDF report..."):
@@ -47,7 +51,7 @@ with tab1:
                         data=pdf_buffer,
                         file_name=f"{selected_cabinet}_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                         mime="application/pdf",
-                        use_container_width=True
+                        use_container_width=True,
                     )
                 except Exception as e:
                     st.error(f"Error generating PDF: {str(e)}")
@@ -59,23 +63,18 @@ with tab2:
 
     # Cabinet type selector
     comparison_type = st.selectbox(
-        "Select Cabinet Type",
-        ["All Freezers", "All Chillers", "All M&P", "Custom Selection"]
+        "Select Cabinet Type", ["All Freezers", "All Chillers", "All M&P", "Custom Selection"]
     )
 
     # Get cabinet list based on selection
     if comparison_type == "All Freezers":
-        multi_cabinets = sorted(df[df['cabinet'].str.contains('Freezer', case=False)]['cabinet'].unique())
+        multi_cabinets = sorted(df[df["cabinet"].str.contains("Freezer", case=False)]["cabinet"].unique())
     elif comparison_type == "All Chillers":
-        multi_cabinets = sorted(df[df['cabinet'].str.contains('Chiller', case=False)]['cabinet'].unique())
+        multi_cabinets = sorted(df[df["cabinet"].str.contains("Chiller", case=False)]["cabinet"].unique())
     elif comparison_type == "All M&P":
-        multi_cabinets = sorted(df[df['cabinet'].str.contains('M&P', case=False)]['cabinet'].unique())
+        multi_cabinets = sorted(df[df["cabinet"].str.contains("M&P", case=False)]["cabinet"].unique())
     else:
-        multi_cabinets = st.multiselect(
-            "Select Cabinets (2-15)",
-            sorted(df['cabinet'].unique()),
-            default=[]
-        )
+        multi_cabinets = st.multiselect("Select Cabinets (2-15)", sorted(df["cabinet"].unique()), default=[])
 
     if comparison_type != "Custom Selection":
         st.info(f"📊 {len(multi_cabinets)} cabinets selected")
@@ -92,7 +91,7 @@ with tab2:
                         data=pdf_buffer,
                         file_name=f"multi_cabinet_comparison_{comparison_type.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
                         mime="application/pdf",
-                        use_container_width=True
+                        use_container_width=True,
                     )
                 except Exception as e:
                     st.error(f"Error generating comparison PDF: {str(e)}")

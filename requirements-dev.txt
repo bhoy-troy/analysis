@@ -9,3 +9,4 @@ mypy>=1.9
 bandit>=1.7
 safety>=3.0
 pre-commit>=3.7
+watchdog

@@ -3,7 +3,6 @@ Analysis and calculation functions for temperature data.
 """
 
 import pandas as pd
-import numpy as np
 
 
 def detect_cooling_cycles(cabinet_data, temp_threshold=0.5):
@@ -118,7 +117,7 @@ def calculate_recovery_time(cabinet_data, defrost_cycles, is_freezer=True):
 
     recovery_data = []
 
-    for idx, defrost in defrost_cycles.iterrows():
+    for _idx, defrost in defrost_cycles.iterrows():
         # Ensure end_time is timezone-aware to match timestamp column
         end_time = pd.Timestamp(defrost["end_time"])
         if cabinet_data["timestamp"].dt.tz is not None:
@@ -157,11 +156,9 @@ def calculate_time_in_range(cabinet_data, is_freezer=True):
     """
     if is_freezer:
         optimal_min, optimal_max = -25, -18
-        warning_min, warning_max = -15, -10
         critical_threshold = -10
     else:
         optimal_min, optimal_max = 0, 5
-        warning_min, warning_max = 5, 8
         critical_threshold = 8
 
     total_readings = len(cabinet_data)
@@ -251,7 +248,7 @@ def calculate_health_score(cabinet_data, is_freezer=True):
 
     # Calculate weighted average
     total_weight = sum(weights)
-    health_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
+    health_score = sum(s * w for s, w in zip(scores, weights, strict=False)) / total_weight
 
     return {
         "overall_score": health_score,
