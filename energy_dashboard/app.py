@@ -11,6 +11,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.dynamodb import get_table, parse_data, query_by_gateway_and_timestamp
+from utils.tariffs import INDUSTRIAL_LEU_TARIFF
 
 MIC_DEFAULT = 290
 # 69a58037-ff2b-5a9c-8fe2-9adf3d3b08a2
@@ -65,12 +66,6 @@ if not check_authentication():
 st.title("Energy Usage Dashboard")
 st.caption("Connected Resource & Energy Intelligence Monitoring")
 
-# Add logout button in sidebar
-with st.sidebar:
-    st.markdown("---")
-    if st.button("🚪 Logout", use_container_width=True):
-        logout()
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.header("Configuration")
 MIC = st.sidebar.number_input("MIC (Maximum Import Capacity) kW", value=MIC_DEFAULT, step=10)
@@ -93,6 +88,62 @@ days_back = st.sidebar.slider("Days to load", min_value=1, max_value=30, value=3
 start_date = end_date - timedelta(days=days_back)
 
 st.sidebar.info(f"Loading {days_back} days of data\n({start_date} to {end_date})")
+
+# Tariff Information
+st.sidebar.markdown("---")
+with st.sidebar.expander("📋 View Tariff Rates"):
+    st.markdown("### Industrial (LEU) Tariff")
+    st.caption("Contract ends: 31 Oct 2025 | Max Capacity: 290 kVA")
+
+    tariff_data = {
+        "Charge Type": [
+            "Energy Rate",
+            "DUoS Standing Charge",
+            "DUoS Capacity Charge",
+            "DUoS Peak Rate",
+            "DUoS Day Rate (Off-Peak)",
+            "DUoS Night Rate",
+            "Demand Network Capacity",
+            "TUoS Day Rate",
+            "TUoS Night Rate",
+            "Supplier Capacity Charge",
+            "Imperfections Charge",
+            "Market Operator Charge",
+            "PSO Levy",
+            "Electricity Tax",
+            "VAT",
+        ],
+        "Rate": [
+            "€0.124178/kWh",
+            "€401.41/month",
+            "€2.8948/kVA",
+            "€0.01513/kWh",
+            "€0.01376/kWh",
+            "€0.00219/kWh",
+            "€7.3865/MWh",
+            "€31.0312/MWh",
+            "€31.0312/MWh",
+            "€826.62/month",
+            "€0.01462/kWh",
+            "€0.000641/kWh",
+            "€455.30/month",
+            "€0.001/kWh",
+            "9%",
+        ],
+    }
+
+    tariff_df = pd.DataFrame(tariff_data)
+    st.dataframe(tariff_df, use_container_width=True, hide_index=True)
+
+    st.markdown("**Time Periods:**")
+    st.markdown("- **Day**: 08:00 - 23:00")
+    st.markdown("- **Night**: 23:00 - 08:00")
+    st.markdown("- **Peak**: 08:00-11:00, 17:00-20:00 (verify)")
+
+# Logout button at bottom of sidebar
+st.sidebar.markdown("---")
+if st.sidebar.button("🚪 Logout", use_container_width=True):
+    logout()
 
 
 # ── Load data from DynamoDB ───────────────────────────────────────────────────
@@ -380,9 +431,78 @@ with tab1:
         # Add % of MIC column
         daily_stats["Peak % of MIC"] = ((daily_stats["Peak Demand (kW)"] / MIC) * 100).round(1)
 
-        # Add cost estimate (optional - can be removed if not needed)
-        # Assuming €0.15 per kWh as example rate
-        daily_stats["Est. Cost (€)"] = (daily_stats["Cumulative Energy (kWh)"] * 0.15).round(2)
+        # Calculate  cost using Energia tariff
+        # Split energy by time of day for accurate costing
+        df_summary["hour"] = df_summary["timestamp"].dt.hour
+        df_summary["is_day"] = df_summary["hour"].isin(INDUSTRIAL_LEU_TARIFF["day_hours"])
+
+        # Calculate day and night energy per date
+        daily_breakdown = df_summary.groupby(["date", "is_day"])["kWh_interval"].sum().unstack(fill_value=0)
+        daily_breakdown.columns = ["Night kWh", "Day kWh"]
+        daily_breakdown = daily_breakdown.reset_index()
+
+        # Merge with daily_stats
+        daily_stats = daily_stats.merge(daily_breakdown, left_on="Date", right_on="date", how="left").drop("date", axis=1)
+
+        # Calculate daily costs based on Energia Industrial (LEU) tariff
+        def calculate_daily_cost(row):
+            day_kwh = row["Day kWh"]
+            night_kwh = row["Night kWh"]
+            total_kwh = day_kwh + night_kwh
+
+            if total_kwh == 0:
+                return 0.0
+
+            # Energy charges
+            energy_cost = total_kwh * INDUSTRIAL_LEU_TARIFF["energy_rate"]
+
+            # DUoS charges (prorated daily from monthly)
+            duos_standing = INDUSTRIAL_LEU_TARIFF["duos_standing_charge_monthly"] / 30
+            duos_capacity = (INDUSTRIAL_LEU_TARIFF["max_import_capacity_kva"] *
+                           INDUSTRIAL_LEU_TARIFF["duos_capacity_charge_per_kva"]) / 30
+            duos_energy = (day_kwh * INDUSTRIAL_LEU_TARIFF["duos_day_rate"] +
+                          night_kwh * INDUSTRIAL_LEU_TARIFF["duos_night_rate"])
+
+            # TUoS charges (convert kWh to MWh)
+            day_mwh = day_kwh / 1000
+            night_mwh = night_kwh / 1000
+            total_mwh = total_kwh / 1000
+
+            demand_network = total_mwh * INDUSTRIAL_LEU_TARIFF["demand_network_capacity_per_mwh"]
+            tuos_day = day_mwh * INDUSTRIAL_LEU_TARIFF["tuos_day_rate_per_mwh"]
+            tuos_night = night_mwh * INDUSTRIAL_LEU_TARIFF["tuos_night_rate_per_mwh"]
+
+            # Supplier capacity charge (prorated daily)
+            supplier_capacity = INDUSTRIAL_LEU_TARIFF["supplier_capacity_charge_monthly"] / 30
+
+            # Market charges
+            capacity_social = total_kwh * INDUSTRIAL_LEU_TARIFF["capacity_socialisation_charge"]
+            imperfections = total_kwh * INDUSTRIAL_LEU_TARIFF["imperfections_charge"]
+            market_op = total_kwh * INDUSTRIAL_LEU_TARIFF["market_operator_charge"]
+            currency_adj = total_kwh * INDUSTRIAL_LEU_TARIFF["currency_adjustment_charge"]
+
+            # Levies (prorated daily)
+            pso_levy = INDUSTRIAL_LEU_TARIFF["pso_levy_monthly"] / 30
+            eeos = total_kwh * (INDUSTRIAL_LEU_TARIFF["eeos_charge"] + INDUSTRIAL_LEU_TARIFF["eeos_credit"])
+
+            # Electricity tax
+            elec_tax = total_kwh * INDUSTRIAL_LEU_TARIFF["electricity_tax"]
+
+            # Subtotal before VAT
+            subtotal = (energy_cost + duos_standing + duos_capacity + duos_energy +
+                       demand_network + tuos_day + tuos_night + supplier_capacity +
+                       capacity_social + imperfections + market_op + currency_adj +
+                       pso_levy + eeos + elec_tax)
+
+            # VAT
+            vat = subtotal * INDUSTRIAL_LEU_TARIFF["vat_rate"]
+
+            # Total
+            total = subtotal + vat
+
+            return round(total, 2)
+
+        daily_stats["Est Cost (€)"] = daily_stats.apply(calculate_daily_cost, axis=1)
 
         # Display summary metrics
         col1, col2, col3, col4 = st.columns(4)
@@ -390,15 +510,27 @@ with tab1:
         avg_daily_energy = daily_stats["Cumulative Energy (kWh)"].mean()
         max_peak = daily_stats["Peak Demand (kW)"].max()
         avg_pf = daily_stats["Avg Power Factor"].mean()
+        total_cost = daily_stats["Est Cost (€)"].sum()
 
         col1.metric("Total Energy (Period)", f"{total_energy:.1f} kWh")
-        col2.metric("Avg Daily Energy", f"{avg_daily_energy:.1f} kWh/day")
+        col2.metric("Estimated Total Cost", f"€{total_cost:,.2f}")
         col3.metric("Highest Peak", f"{max_peak:.1f} kW", delta=f"{(max_peak/MIC)*100:.1f}% of MIC")
         col4.metric("Avg Power Factor", f"{avg_pf:.3f}")
 
-        # Display the table with styling
+        # Display the table with styling (excluding Day/Night kWh breakdown columns)
+        display_cols = [
+            "Date",
+            "Cumulative Energy (kWh)",
+            "Peak Demand (kW)",
+            "Avg Power Factor",
+            "Peak Apparent (kVA)",
+            "Peak % of MIC",
+            "Est Cost (€)",
+        ]
+
         st.dataframe(
-            daily_stats.style.background_gradient(subset=["Peak % of MIC"], cmap="RdYlGn_r", vmin=50, vmax=100)
+            daily_stats[display_cols]
+            .style.background_gradient(subset=["Peak % of MIC"], cmap="RdYlGn_r", vmin=50, vmax=100)
             .background_gradient(subset=["Avg Power Factor"], cmap="RdYlGn", vmin=0.85, vmax=1.0)
             .format(
                 {
@@ -407,7 +539,7 @@ with tab1:
                     "Avg Power Factor": "{:.3f}",
                     "Peak Apparent (kVA)": "{:.1f}",
                     "Peak % of MIC": "{:.1f}%",
-                    "Est. Cost (€)": "€{:.2f}",
+                    "Est Cost (€)": "€{:.2f}",
                 }
             ),
             use_container_width=True,
@@ -422,6 +554,39 @@ with tab1:
             file_name=f"daily_energy_summary_{datetime.now(UTC).strftime('%Y%m%d')}.csv",
             mime="text/csv",
         )
+
+        # Cost calculation explanation
+        with st.expander("ℹ️ How are costs calculated?"):
+            st.markdown(f"""
+            **Cost calculation based on Energia Industrial (LEU) Tariff:**
+
+            Costs include all actual charges from your energy bill:
+            - **Energy Charges**: €{INDUSTRIAL_LEU_TARIFF['energy_rate']}/kWh base rate
+            - **Network Charges (DUoS)**:
+              - Standing charge: €{INDUSTRIAL_LEU_TARIFF['duos_standing_charge_monthly']:.2f}/month (prorated daily)
+              - Capacity charge: €{INDUSTRIAL_LEU_TARIFF['duos_capacity_charge_per_kva']}/kVA × {INDUSTRIAL_LEU_TARIFF['max_import_capacity_kva']} kVA
+              - Day rate: €{INDUSTRIAL_LEU_TARIFF['duos_day_rate']}/kWh (08:00-23:00)
+              - Night rate: €{INDUSTRIAL_LEU_TARIFF['duos_night_rate']}/kWh (23:00-08:00)
+            - **Transmission Charges (TUoS)**: €{INDUSTRIAL_LEU_TARIFF['tuos_day_rate_per_mwh']}/MWh
+            - **Supplier Capacity**: €{INDUSTRIAL_LEU_TARIFF['supplier_capacity_charge_monthly']:.2f}/month (prorated daily)
+            - **Market Charges**: Imperfections, Market Operator, Currency Adjustment
+            - **Levies**: PSO Levy (€{INDUSTRIAL_LEU_TARIFF['pso_levy_monthly']:.2f}/month), EEOS
+            - **Electricity Tax**: €{INDUSTRIAL_LEU_TARIFF['electricity_tax']}/kWh
+            - **VAT**: {INDUSTRIAL_LEU_TARIFF['vat_rate']*100:.0f}%
+
+            **Total estimated cost**: €{total_cost:,.2f} for {len(daily_stats)} days
+            **Average cost per kWh**: €{(total_cost/total_energy) if total_energy > 0 else 0:.4f}/kWh (all-in rate)
+            """)
+
+            # Show day/night breakdown
+            total_day_kwh = daily_stats["Day kWh"].sum()
+            total_night_kwh = daily_stats["Night kWh"].sum()
+            day_pct = (total_day_kwh / total_energy * 100) if total_energy > 0 else 0
+            night_pct = (total_night_kwh / total_energy * 100) if total_energy > 0 else 0
+
+            col1, col2 = st.columns(2)
+            col1.metric("Day Usage (08:00-23:00)", f"{total_day_kwh:,.1f} kWh", delta=f"{day_pct:.1f}%")
+            col2.metric("Night Usage (23:00-08:00)", f"{total_night_kwh:,.1f} kWh", delta=f"{night_pct:.1f}%")
 
         # Highlight any days exceeding threshold
         risk_days = daily_stats[daily_stats["Peak % of MIC"] >= demand_warning_pct]
