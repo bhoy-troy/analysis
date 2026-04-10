@@ -158,7 +158,7 @@ if "value" not in raw.columns:
         st.info(f"Using column '{value_col}' as value field")
     else:
         st.error("No 'value' column found in data and no numeric columns available")
-        st.dataframe(raw.head())
+        st.dataframe(raw.head(), hide_index=True)
         st.stop()
 
 # ── Pivot: long → wide ────────────────────────────────────────────────────────
@@ -218,16 +218,17 @@ if pf_risk:
 st.markdown("---")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "Energy Overview",
-    "Power Factor",
-    "Peak Demand",
-    "Load Heatmap",
-    "Efficiency Score",
-    "Load Forecasting",
-    "Anomaly Detection",
-    "Raw Data"
-])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    [
+        "Energy Overview",
+        "Peak Demand",
+        "Load Heatmap",
+        "Efficiency Score",
+        "Load Forecasting",
+        "Anomaly Detection",
+        "Raw Data",
+    ]
+)
 
 # ── Tab 1: Energy Overview ────────────────────────────────────────────────────
 with tab1:
@@ -348,15 +349,27 @@ with tab1:
         df_summary["kWh_interval"] = df_summary["Total kW"] * df_summary["time_diff_hours"]
 
         # Group by date and calculate daily statistics
-        daily_stats = df_summary.groupby("date").agg({
-            "kWh_interval": "sum",  # Cumulative energy
-            "Total kW": "max",      # Peak demand
-            "Average PF": "mean",   # Average power factor
-            "Total kVA": "max"      # Peak apparent power
-        }).reset_index()
+        daily_stats = (
+            df_summary.groupby("date")
+            .agg(
+                {
+                    "kWh_interval": "sum",  # Cumulative energy
+                    "Total kW": "max",  # Peak demand
+                    "Average PF": "mean",  # Average power factor
+                    "Total kVA": "max",  # Peak apparent power
+                }
+            )
+            .reset_index()
+        )
 
         # Rename columns for display
-        daily_stats.columns = ["Date", "Cumulative Energy (kWh)", "Peak Demand (kW)", "Avg Power Factor", "Peak Apparent (kVA)"]
+        daily_stats.columns = [
+            "Date",
+            "Cumulative Energy (kWh)",
+            "Peak Demand (kW)",
+            "Avg Power Factor",
+            "Peak Apparent (kVA)",
+        ]
 
         # Round values
         daily_stats["Cumulative Energy (kWh)"] = daily_stats["Cumulative Energy (kWh)"].round(1)
@@ -385,25 +398,20 @@ with tab1:
 
         # Display the table with styling
         st.dataframe(
-            daily_stats.style.background_gradient(
-                subset=["Peak % of MIC"],
-                cmap="RdYlGn_r",
-                vmin=50,
-                vmax=100
-            ).background_gradient(
-                subset=["Avg Power Factor"],
-                cmap="RdYlGn",
-                vmin=0.85,
-                vmax=1.0
-            ).format({
-                "Cumulative Energy (kWh)": "{:.1f}",
-                "Peak Demand (kW)": "{:.1f}",
-                "Avg Power Factor": "{:.3f}",
-                "Peak Apparent (kVA)": "{:.1f}",
-                "Peak % of MIC": "{:.1f}%",
-                "Est. Cost (€)": "€{:.2f}"
-            }),
-            use_container_width=True
+            daily_stats.style.background_gradient(subset=["Peak % of MIC"], cmap="RdYlGn_r", vmin=50, vmax=100)
+            .background_gradient(subset=["Avg Power Factor"], cmap="RdYlGn", vmin=0.85, vmax=1.0)
+            .format(
+                {
+                    "Cumulative Energy (kWh)": "{:.1f}",
+                    "Peak Demand (kW)": "{:.1f}",
+                    "Avg Power Factor": "{:.3f}",
+                    "Peak Apparent (kVA)": "{:.1f}",
+                    "Peak % of MIC": "{:.1f}%",
+                    "Est. Cost (€)": "€{:.2f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
         )
 
         # Download button for the summary
@@ -412,54 +420,233 @@ with tab1:
             "📥 Download Daily Summary CSV",
             data=csv,
             file_name=f"daily_energy_summary_{datetime.now(UTC).strftime('%Y%m%d')}.csv",
-            mime="text/csv"
+            mime="text/csv",
         )
 
         # Highlight any days exceeding threshold
         risk_days = daily_stats[daily_stats["Peak % of MIC"] >= demand_warning_pct]
         if len(risk_days) > 0:
             st.warning(
-                f"⚠️ **{len(risk_days)} day(s)** exceeded {demand_warning_pct}% demand threshold:\n" +
-                "\n".join([f"- {row['Date']}: Peak {row['Peak Demand (kW)']:.1f} kW ({row['Peak % of MIC']:.1f}% of MIC)"
-                          for _, row in risk_days.iterrows()])
+                f"⚠️ **{len(risk_days)} day(s)** exceeded {demand_warning_pct}% demand threshold:\n"
+                + "\n".join(
+                    [
+                        f"- {row['Date']}: Peak {row['Peak Demand (kW)']:.1f} kW ({row['Peak % of MIC']:.1f}% of MIC)"
+                        for _, row in risk_days.iterrows()
+                    ]
+                )
             )
     else:
         st.info("No power data available for daily summary")
 
-# ── Tab 2: Power Factor ───────────────────────────────────────────────────────
-with tab2:
-    if "Average PF" in df.columns:
-        st.subheader("Power factor over time")
-        fig2 = go.Figure()
-        fig2.add_trace(
-            go.Scatter(
-                x=df["timestamp"], y=df["Average PF"], mode="lines", fill="tozeroy", name="Avg PF", line={"width": 2}
+    # Week-over-Week Comparison
+    st.markdown("---")
+    st.subheader("📊 Week-over-Week Comparison")
+
+    if "Total kW" in df.columns and len(df) >= 7:
+        # Add week information
+        df_weekly = df.copy()
+        df_weekly["date"] = df_weekly["timestamp"].dt.date
+        df_weekly["week_start"] = df_weekly["timestamp"].dt.to_period("W").apply(lambda r: r.start_time.date())
+
+        # Calculate weekly statistics
+        weekly_stats = df_weekly.groupby("week_start").agg(
+            {
+                "Total kW": ["mean", "max"],
+                "Average PF": "mean" if "Average PF" in df_weekly.columns else lambda x: None,
+            }
+        )
+
+        # Flatten column names
+        weekly_stats.columns = ["_".join(col).strip() if col[1] else col[0] for col in weekly_stats.columns.values]
+
+        # Calculate energy consumption per week
+        df_weekly["time_diff_hours"] = df_weekly["timestamp"].diff().dt.total_seconds() / 3600
+        df_weekly.loc[df_weekly["time_diff_hours"] < 0, "time_diff_hours"] = 0
+        df_weekly.loc[df_weekly["time_diff_hours"] > 1, "time_diff_hours"] = 0
+        df_weekly["kWh_interval"] = df_weekly["Total kW"] * df_weekly["time_diff_hours"]
+
+        weekly_energy = df_weekly.groupby("week_start")["kWh_interval"].sum().reset_index()
+        weekly_energy.columns = ["week_start", "Total_kWh"]
+
+        # Merge energy data
+        weekly_stats = weekly_stats.reset_index()
+        weekly_stats = weekly_stats.merge(weekly_energy, on="week_start", how="left")
+
+        # Get last two complete weeks if available
+        if len(weekly_stats) >= 2:
+            current_week = weekly_stats.iloc[-1]
+            previous_week = weekly_stats.iloc[-2]
+
+            # Calculate changes
+            energy_change = (
+                ((current_week["Total_kWh"] - previous_week["Total_kWh"]) / previous_week["Total_kWh"] * 100)
+                if previous_week["Total_kWh"] > 0
+                else 0
             )
-        )
-        fig2.add_hline(
-            y=pf_target,
-            line_dash="dot",
-            line_color="orange",
-            annotation_text=f"Target {pf_target}",
-            annotation_position="top left",
-        )
-        fig2.update_layout(
-            xaxis={"title": "Timestamp"},
-            yaxis={"title": "Power Factor", "range": [0.6, 1.05], "dtick": 0.05},
-            hovermode="x unified",
-        )
-        st.plotly_chart(fig2, use_container_width=True)
+            avg_kw_change = (
+                (
+                    (current_week["Total kW_mean"] - previous_week["Total kW_mean"])
+                    / previous_week["Total kW_mean"]
+                    * 100
+                )
+                if previous_week["Total kW_mean"] > 0
+                else 0
+            )
+            peak_kw_change = (
+                ((current_week["Total kW_max"] - previous_week["Total kW_max"]) / previous_week["Total kW_max"] * 100)
+                if previous_week["Total kW_max"] > 0
+                else 0
+            )
 
-        st.subheader("Power factor distribution")
-        fig_hist = px.histogram(df, x="Average PF", nbins=40)
-        fig_hist.add_vline(x=pf_target, line_dash="dot", line_color="orange", annotation_text=f"Target {pf_target}")
-        fig_hist.update_layout(xaxis_title="Power Factor", yaxis_title="Count")
-        st.plotly_chart(fig_hist, use_container_width=True)
+            # Display comparison metrics
+            col1, col2, col3, col4 = st.columns(4)
+
+            col1.metric(
+                "Total Energy",
+                f"{current_week['Total_kWh']:.1f} kWh",
+                delta=f"{energy_change:+.1f}%",
+                delta_color="inverse",  # Red for increase (more energy used)
+            )
+
+            col2.metric(
+                "Average Load",
+                f"{current_week['Total kW_mean']:.1f} kW",
+                delta=f"{avg_kw_change:+.1f}%",
+                delta_color="inverse",
+            )
+
+            col3.metric(
+                "Peak Demand",
+                f"{current_week['Total kW_max']:.1f} kW",
+                delta=f"{peak_kw_change:+.1f}%",
+                delta_color="inverse",
+            )
+
+            if (
+                "Average PF_mean" in current_week.index
+                and pd.notna(current_week["Average PF_mean"])
+                and pd.notna(previous_week["Average PF_mean"])
+            ):
+                pf_change = (
+                    (
+                        (current_week["Average PF_mean"] - previous_week["Average PF_mean"])
+                        / previous_week["Average PF_mean"]
+                        * 100
+                    )
+                    if previous_week["Average PF_mean"] > 0
+                    else 0
+                )
+                col4.metric(
+                    "Avg Power Factor",
+                    f"{current_week['Average PF_mean']:.3f}",
+                    delta=f"{pf_change:+.1f}%",
+                    delta_color="normal",  # Green for increase (better PF)
+                )
+            else:
+                col4.metric("Avg Power Factor", "N/A")
+
+            # Week labels
+            st.markdown(f"""
+            **Current Week:** {current_week['week_start']} to {current_week['week_start'] + pd.Timedelta(days=6)}
+            **Previous Week:** {previous_week['week_start']} to {previous_week['week_start'] + pd.Timedelta(days=6)}
+            """)
+
+            # Side-by-side bar chart comparison
+            st.markdown("### Weekly Comparison Chart")
+
+            comparison_data = pd.DataFrame(
+                {
+                    "Metric": ["Total Energy (kWh)", "Avg Load (kW)", "Peak Demand (kW)"],
+                    "Previous Week": [
+                        previous_week["Total_kWh"],
+                        previous_week["Total kW_mean"],
+                        previous_week["Total kW_max"],
+                    ],
+                    "Current Week": [
+                        current_week["Total_kWh"],
+                        current_week["Total kW_mean"],
+                        current_week["Total kW_max"],
+                    ],
+                }
+            )
+
+            fig_comparison = go.Figure()
+
+            fig_comparison.add_trace(
+                go.Bar(
+                    name="Previous Week",
+                    x=comparison_data["Metric"],
+                    y=comparison_data["Previous Week"],
+                    marker_color="#94A3B8",
+                    text=comparison_data["Previous Week"].round(1),
+                    textposition="outside",
+                )
+            )
+
+            fig_comparison.add_trace(
+                go.Bar(
+                    name="Current Week",
+                    x=comparison_data["Metric"],
+                    y=comparison_data["Current Week"],
+                    marker_color="#3B82F6",
+                    text=comparison_data["Current Week"].round(1),
+                    textposition="outside",
+                )
+            )
+
+            fig_comparison.update_layout(
+                barmode="group",
+                xaxis_title="",
+                yaxis_title="Value",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                height=400,
+            )
+
+            st.plotly_chart(fig_comparison, use_container_width=True)
+
+            # Insights
+            st.markdown("### 💡 Key Insights")
+
+            insights = []
+
+            if abs(energy_change) > 10:
+                direction = "increased" if energy_change > 0 else "decreased"
+                color = "🔴" if energy_change > 0 else "🟢"
+                insights.append(
+                    f"{color} Energy consumption {direction} by **{abs(energy_change):.1f}%** compared to last week"
+                )
+
+            if abs(peak_kw_change) > 5:
+                direction = "higher" if peak_kw_change > 0 else "lower"
+                insights.append(f"Peak demand is **{abs(peak_kw_change):.1f}%** {direction} than last week")
+
+            if "Average PF_mean" in current_week.index and pd.notna(current_week["Average PF_mean"]):
+                if current_week["Average PF_mean"] < pf_target:
+                    insights.append(
+                        f"⚠️ Power factor ({current_week['Average PF_mean']:.3f}) is below target ({pf_target})"
+                    )
+
+            # Check if current week peak exceeds warning threshold
+            if current_week["Total kW_max"] >= (MIC * demand_warning_pct / 100):
+                insights.append(
+                    f"⚠️ Peak demand reached **{(current_week['Total kW_max']/MIC*100):.1f}%** of MIC - demand penalty risk"
+                )
+
+            if insights:
+                for insight in insights:
+                    st.info(insight)
+            else:
+                st.success("✅ Energy usage is stable week-over-week")
+
+        elif len(weekly_stats) == 1:
+            st.info("Need at least 2 weeks of data for week-over-week comparison")
+        else:
+            st.info("Not enough data for weekly comparison")
     else:
-        st.info("Average PF data not available.")
+        st.info("Need at least 7 days of data for week-over-week comparison")
 
-# ── Tab 3: Peak Demand ────────────────────────────────────────────────────────
-with tab3:
+# ── Tab 2: Peak Demand ────────────────────────────────────────────────────────
+with tab2:
     if "Total kW" in df.columns:
         st.subheader("Hourly peak demand vs MIC")
         df["hour"] = df["timestamp"].dt.hour
@@ -510,8 +697,8 @@ with tab3:
     else:
         st.info("Total kW data not available.")
 
-# ── Tab 4: Load Heatmap ───────────────────────────────────────────────────────
-with tab4:
+# ── Tab 3: Load Heatmap ───────────────────────────────────────────────────────
+with tab3:
     if "Total kW" in df.columns:
         st.subheader("Load heatmap — avg kW by hour and day")
         df["date"] = df["timestamp"].dt.date
@@ -530,8 +717,8 @@ with tab4:
     else:
         st.info("Total kW data not available.")
 
-# ── Tab 5: Efficiency Score Heatmap ───────────────────────────────────────────
-with tab5:
+# ── Tab 4: Efficiency Score Heatmap ───────────────────────────────────────────
+with tab4:
     if "Total kW" in df.columns and "Total kVA" in df.columns and "Average PF" in df.columns:
         st.subheader("Daily efficiency score heatmap")
 
@@ -549,22 +736,27 @@ with tab5:
         df["kWh_interval"] = df["Total kW"] * df["time_diff_hours"]
 
         # Group by day and calculate daily metrics
-        daily_stats = df.groupby("date").agg({
-            "Average PF": "mean",  # Average power factor
-            "Total kW": "mean",    # Average kW
-            "Total kVA": "mean",   # Average kVA
-            "kWh_interval": "sum", # Total kWh consumed
-            "day_of_month": "first",
-            "month": "first"
-        }).reset_index()
+        daily_stats = (
+            df.groupby("date")
+            .agg(
+                {
+                    "Average PF": "mean",  # Average power factor
+                    "Total kW": "mean",  # Average kW
+                    "Total kVA": "mean",  # Average kVA
+                    "kWh_interval": "sum",  # Total kWh consumed
+                    "day_of_month": "first",
+                    "month": "first",
+                }
+            )
+            .reset_index()
+        )
 
         # Calculate efficiency score (0-100)
         # Based on: Power Factor (60%), kW/kVA ratio (40%)
         daily_stats["kW_kVA_ratio"] = daily_stats["Total kW"] / daily_stats["Total kVA"].replace(0, 1)
-        daily_stats["efficiency_score"] = (
-            (daily_stats["Average PF"] * 60) +
-            (daily_stats["kW_kVA_ratio"] * 40)
-        ).clip(0, 100)  # Ensure score stays within 0-100%
+        daily_stats["efficiency_score"] = ((daily_stats["Average PF"] * 60) + (daily_stats["kW_kVA_ratio"] * 40)).clip(
+            0, 100
+        )  # Ensure score stays within 0-100%
 
         # Round kWh for display
         daily_stats["kWh_display"] = daily_stats["kWh_interval"].round(1)
@@ -586,31 +778,32 @@ with tab5:
                 # Create annotations with kWh values
                 annotations = []
                 for _, row in month_data.iterrows():
-                    annotations.append({
-                        "x": row["day_of_month"],
-                        "y": 0,
-                        "text": f"{row['kWh_display']}<br>kWh",
-                        "showarrow": False,
-                        "font": {"size": 10, "color": "white"}
-                    })
+                    annotations.append(
+                        {
+                            "x": row["day_of_month"],
+                            "y": 0,
+                            "text": f"{row['kWh_display']}<br>kWh",
+                            "showarrow": False,
+                            "font": {"size": 10, "color": "white"},
+                        }
+                    )
 
                 # Create heatmap
-                fig_eff = go.Figure(data=go.Heatmap(
-                    x=month_data["day_of_month"],
-                    y=["Efficiency"] * len(month_data),
-                    z=month_data["efficiency_score"],
-                    text=month_data["kWh_display"],
-                    texttemplate="Day %{x}<br>%{text} kWh<br>Score: %{z:.1f}",
-                    textfont={"size": 10},
-                    colorscale="RdYlGn",  # Red (low) to Green (high)
-                    zmid=85,  # Center the colorscale at 85% efficiency
-                    zmin=70,
-                    zmax=100,
-                    colorbar={
-                        "title": "Efficiency<br>Score",
-                        "ticksuffix": "%"
-                    }
-                ))
+                fig_eff = go.Figure(
+                    data=go.Heatmap(
+                        x=month_data["day_of_month"],
+                        y=["Efficiency"] * len(month_data),
+                        z=month_data["efficiency_score"],
+                        text=month_data["kWh_display"],
+                        texttemplate="Day %{x}<br>%{text} kWh<br>Score: %{z:.1f}",
+                        textfont={"size": 10},
+                        colorscale="RdYlGn",  # Red (low) to Green (high)
+                        zmid=85,  # Center the colorscale at 85% efficiency
+                        zmin=70,
+                        zmax=100,
+                        colorbar={"title": "Efficiency<br>Score", "ticksuffix": "%"},
+                    )
+                )
 
                 fig_eff.update_layout(
                     xaxis={"title": "Day of Month", "dtick": 1},
@@ -625,7 +818,9 @@ with tab5:
                 col1.metric("Avg Efficiency Score", f"{month_data['efficiency_score'].mean():.1f}%")
                 col2.metric("Total Energy", f"{month_data['kWh_interval'].sum():.1f} kWh")
                 col3.metric("Avg Power Factor", f"{month_data['Average PF'].mean():.3f}")
-                col4.metric("Best Day", f"Day {month_data.loc[month_data['efficiency_score'].idxmax(), 'day_of_month']}")
+                col4.metric(
+                    "Best Day", f"Day {month_data.loc[month_data['efficiency_score'].idxmax(), 'day_of_month']}"
+                )
 
         else:
             st.info("Need at least one day of data to calculate efficiency scores")
@@ -656,8 +851,8 @@ with tab5:
     else:
         st.info("Power Factor or kW/kVA data not available for efficiency calculation")
 
-# ── Tab 6: Load Forecasting ───────────────────────────────────────────────────
-with tab6:
+# ── Tab 5: Load Forecasting ───────────────────────────────────────────────────
+with tab5:
     if "Total kW" in df.columns and len(df) > 48:  # Need at least 2 days of data
         st.subheader("⚡ 7-Day Load Forecasting")
 
@@ -686,7 +881,7 @@ with tab6:
                             seasonal_periods=seasonal_periods,
                             trend="add",
                             seasonal="add",
-                            initialization_method="estimated"
+                            initialization_method="estimated",
                         )
                         fitted_model = model.fit(optimized=True)
 
@@ -694,9 +889,7 @@ with tab6:
                         forecast_steps = 168
                         forecast = fitted_model.forecast(steps=forecast_steps)
                         forecast_index = pd.date_range(
-                            start=ts_data.index[-1] + pd.Timedelta(hours=1),
-                            periods=forecast_steps,
-                            freq="h"
+                            start=ts_data.index[-1] + pd.Timedelta(hours=1), periods=forecast_steps, freq="h"
                         )
 
                         # Calculate prediction intervals (approximate)
@@ -705,12 +898,14 @@ with tab6:
                         std_residuals = residuals.std()
                         confidence_level = 1.96  # 95% confidence
 
-                        forecast_df = pd.DataFrame({
-                            "timestamp": forecast_index,
-                            "forecast": forecast.values,
-                            "lower_bound": forecast.values - (confidence_level * std_residuals),
-                            "upper_bound": forecast.values + (confidence_level * std_residuals)
-                        })
+                        forecast_df = pd.DataFrame(
+                            {
+                                "timestamp": forecast_index,
+                                "forecast": forecast.values,
+                                "lower_bound": forecast.values - (confidence_level * std_residuals),
+                                "upper_bound": forecast.values + (confidence_level * std_residuals),
+                            }
+                        )
 
                         # Ensure bounds are non-negative
                         forecast_df["lower_bound"] = forecast_df["lower_bound"].clip(lower=0)
@@ -727,21 +922,15 @@ with tab6:
                         col1.metric(
                             "Predicted Peak (7d)",
                             f"{predicted_peak:.1f} kW",
-                            delta=f"{((predicted_peak/MIC)*100):.1f}% of MIC"
+                            delta=f"{((predicted_peak/MIC)*100):.1f}% of MIC",
                         )
                         col2.metric(
                             "Avg Load (7d)",
                             f"{predicted_avg:.1f} kW",
-                            delta=f"{predicted_avg - current_avg:+.1f} kW vs now"
+                            delta=f"{predicted_avg - current_avg:+.1f} kW vs now",
                         )
-                        col3.metric(
-                            "Total Energy (7d)",
-                            f"{total_forecasted_kwh:.0f} kWh"
-                        )
-                        col4.metric(
-                            "Model Accuracy",
-                            f"{(1 - abs(residuals.mean() / ts_data.mean())) * 100:.1f}%"
-                        )
+                        col3.metric("Total Energy (7d)", f"{total_forecasted_kwh:.0f} kWh")
+                        col4.metric("Model Accuracy", f"{(1 - abs(residuals.mean() / ts_data.mean())) * 100:.1f}%")
 
                         # Visualization
                         st.markdown("### 📈 Historical Data + 7-Day Forecast")
@@ -752,33 +941,39 @@ with tab6:
                         lookback_hours = min(168, len(ts_data))
                         historical = ts_data.iloc[-lookback_hours:]
 
-                        fig_forecast.add_trace(go.Scatter(
-                            x=historical.index,
-                            y=historical.values,
-                            mode="lines",
-                            name="Historical",
-                            line={"color": "#3B82F6", "width": 2}
-                        ))
+                        fig_forecast.add_trace(
+                            go.Scatter(
+                                x=historical.index,
+                                y=historical.values,
+                                mode="lines",
+                                name="Historical",
+                                line={"color": "#3B82F6", "width": 2},
+                            )
+                        )
 
                         # Forecast
-                        fig_forecast.add_trace(go.Scatter(
-                            x=forecast_df["timestamp"],
-                            y=forecast_df["forecast"],
-                            mode="lines",
-                            name="Forecast",
-                            line={"color": "#10B981", "width": 2, "dash": "dash"}
-                        ))
+                        fig_forecast.add_trace(
+                            go.Scatter(
+                                x=forecast_df["timestamp"],
+                                y=forecast_df["forecast"],
+                                mode="lines",
+                                name="Forecast",
+                                line={"color": "#10B981", "width": 2, "dash": "dash"},
+                            )
+                        )
 
                         # Confidence interval
-                        fig_forecast.add_trace(go.Scatter(
-                            x=forecast_df["timestamp"].tolist() + forecast_df["timestamp"].tolist()[::-1],
-                            y=forecast_df["upper_bound"].tolist() + forecast_df["lower_bound"].tolist()[::-1],
-                            fill="toself",
-                            fillcolor="rgba(16, 185, 129, 0.2)",
-                            line={"color": "rgba(255,255,255,0)"},
-                            name="95% Confidence",
-                            showlegend=True
-                        ))
+                        fig_forecast.add_trace(
+                            go.Scatter(
+                                x=forecast_df["timestamp"].tolist() + forecast_df["timestamp"].tolist()[::-1],
+                                y=forecast_df["upper_bound"].tolist() + forecast_df["lower_bound"].tolist()[::-1],
+                                fill="toself",
+                                fillcolor="rgba(16, 185, 129, 0.2)",
+                                line={"color": "rgba(255,255,255,0)"},
+                                name="95% Confidence",
+                                showlegend=True,
+                            )
+                        )
 
                         # Add MIC line
                         fig_forecast.add_hline(
@@ -786,7 +981,7 @@ with tab6:
                             line_dash="dot",
                             line_color="red",
                             annotation_text=f"MIC {MIC} kW",
-                            annotation_position="top right"
+                            annotation_position="top right",
                         )
 
                         # Add warning threshold
@@ -795,14 +990,11 @@ with tab6:
                             line_dash="dot",
                             line_color="orange",
                             annotation_text=f"Warning {demand_warning_pct}%",
-                            annotation_position="bottom right"
+                            annotation_position="bottom right",
                         )
 
                         fig_forecast.update_layout(
-                            xaxis_title="Date/Time",
-                            yaxis_title="Power (kW)",
-                            hovermode="x unified",
-                            height=500
+                            xaxis_title="Date/Time", yaxis_title="Power (kW)", hovermode="x unified", height=500
                         )
 
                         st.plotly_chart(fig_forecast, use_container_width=True)
@@ -811,20 +1003,18 @@ with tab6:
                         st.markdown("### 📅 Daily Forecast Breakdown")
 
                         forecast_df["date"] = forecast_df["timestamp"].dt.date
-                        daily_forecast = forecast_df.groupby("date").agg({
-                            "forecast": ["mean", "max", "min", "sum"]
-                        }).round(1)
+                        daily_forecast = (
+                            forecast_df.groupby("date").agg({"forecast": ["mean", "max", "min", "sum"]}).round(1)
+                        )
                         daily_forecast.columns = ["Avg kW", "Peak kW", "Min kW", "Total kWh"]
                         daily_forecast["Peak % of MIC"] = (daily_forecast["Peak kW"] / MIC * 100).round(1)
 
                         st.dataframe(
                             daily_forecast.style.background_gradient(
-                                subset=["Peak % of MIC"],
-                                cmap="RdYlGn_r",
-                                vmin=50,
-                                vmax=100
+                                subset=["Peak % of MIC"], cmap="RdYlGn_r", vmin=50, vmax=100
                             ),
-                            use_container_width=True
+                            use_container_width=True,
+                            hide_index=True,
                         )
 
                         # Insights
@@ -833,9 +1023,13 @@ with tab6:
                         risk_days = daily_forecast[daily_forecast["Peak kW"] > (MIC * demand_warning_pct / 100)]
                         if len(risk_days) > 0:
                             st.warning(
-                                f"⚠️ **{len(risk_days)} day(s)** predicted to exceed {demand_warning_pct}% demand threshold:\n" +
-                                "\n".join([f"- {date}: Peak {row['Peak kW']:.1f} kW ({row['Peak % of MIC']:.1f}% of MIC)"
-                                          for date, row in risk_days.iterrows()])
+                                f"⚠️ **{len(risk_days)} day(s)** predicted to exceed {demand_warning_pct}% demand threshold:\n"
+                                + "\n".join(
+                                    [
+                                        f"- {date}: Peak {row['Peak kW']:.1f} kW ({row['Peak % of MIC']:.1f}% of MIC)"
+                                        for date, row in risk_days.iterrows()
+                                    ]
+                                )
                             )
                         else:
                             st.success("✅ No demand threshold violations predicted in next 7 days")
@@ -844,9 +1038,13 @@ with tab6:
                         avg_change = ((predicted_avg - current_avg) / current_avg) * 100
                         if abs(avg_change) > 5:
                             if avg_change > 0:
-                                st.info(f"📈 Load predicted to increase by {avg_change:.1f}% compared to current average")
+                                st.info(
+                                    f"📈 Load predicted to increase by {avg_change:.1f}% compared to current average"
+                                )
                             else:
-                                st.info(f"📉 Load predicted to decrease by {abs(avg_change):.1f}% compared to current average")
+                                st.info(
+                                    f"📉 Load predicted to decrease by {abs(avg_change):.1f}% compared to current average"
+                                )
 
                     except Exception as e:
                         st.error(f"Forecasting model error: {e}")
@@ -858,10 +1056,22 @@ with tab6:
     else:
         st.info("Need at least 48 hours of data for load forecasting")
 
-# ── Tab 7: Anomaly Detection ──────────────────────────────────────────────────
-with tab7:
+# ── Tab 6: Anomaly Detection ──────────────────────────────────────────────────
+with tab6:
     if "Total kW" in df.columns and len(df) > 24:
         st.subheader("🚨 Anomaly Detection")
+
+        st.markdown("""
+        Anomaly detection identifies unusual energy consumption patterns that deviate from normal behavior.
+        This helps identify:
+        - Equipment malfunctions or inefficiencies
+        - Unexpected operation during off-hours
+        - Sudden spikes or drops in demand
+        - Irregular consumption patterns that may indicate issues
+
+        The system analyzes power consumption (kW, kVA, PF) along with time-of-day and day-of-week patterns
+        to flag readings that are statistically abnormal.
+        """)
 
         try:
             import numpy as np
@@ -886,10 +1096,15 @@ with tab7:
 
             # Method selection
             st.markdown("### Detection Method")
+            st.info("""
+            **Isolation Forest (ML)**: Machine learning algorithm that isolates anomalies by randomly partitioning data.
+            Better for complex, multi-dimensional patterns.
+
+            **Z-Score (Statistical)**: Classic statistical method measuring how many standard deviations a point is from the mean.
+            Simpler and faster, best for single-variable outliers.
+            """)
             detection_method = st.radio(
-                "Choose detection algorithm:",
-                ["Isolation Forest (ML)", "Z-Score (Statistical)"],
-                horizontal=True
+                "Choose detection algorithm:", ["Isolation Forest (ML)", "Z-Score (Statistical)"], horizontal=True
             )
 
             if detection_method == "Isolation Forest (ML)":
@@ -900,15 +1115,11 @@ with tab7:
                     max_value=0.20,
                     value=0.05,
                     step=0.01,
-                    format="%.2f"
+                    format="%.2f",
                 )
 
                 with st.spinner("Detecting anomalies using Isolation Forest..."):
-                    iso_forest = IsolationForest(
-                        contamination=contamination,
-                        random_state=42,
-                        n_estimators=100
-                    )
+                    iso_forest = IsolationForest(contamination=contamination, random_state=42, n_estimators=100)
                     df_anomaly["anomaly"] = iso_forest.fit_predict(X)
                     df_anomaly["anomaly_score"] = iso_forest.score_samples(X)
 
@@ -918,11 +1129,7 @@ with tab7:
             else:
                 # Z-Score method
                 z_threshold = st.slider(
-                    "Z-Score threshold (std deviations)",
-                    min_value=2.0,
-                    max_value=4.0,
-                    value=3.0,
-                    step=0.5
+                    "Z-Score threshold (std deviations)", min_value=2.0, max_value=4.0, value=3.0, step=0.5
                 )
 
                 with st.spinner("Detecting anomalies using Z-Score..."):
@@ -955,30 +1162,31 @@ with tab7:
 
             # Normal data
             normal_data = df_anomaly[~df_anomaly["is_anomaly"]]
-            fig_anomaly.add_trace(go.Scatter(
-                x=normal_data["timestamp"],
-                y=normal_data["Total kW"],
-                mode="markers",
-                name="Normal",
-                marker={"color": "#3B82F6", "size": 4}
-            ))
+            fig_anomaly.add_trace(
+                go.Scatter(
+                    x=normal_data["timestamp"],
+                    y=normal_data["Total kW"],
+                    mode="markers",
+                    name="Normal",
+                    marker={"color": "#3B82F6", "size": 4},
+                )
+            )
 
             # Anomalies
             if n_anomalies > 0:
                 anomaly_data = df_anomaly[df_anomaly["is_anomaly"]]
-                fig_anomaly.add_trace(go.Scatter(
-                    x=anomaly_data["timestamp"],
-                    y=anomaly_data["Total kW"],
-                    mode="markers",
-                    name="Anomaly",
-                    marker={"color": "#EF4444", "size": 10, "symbol": "x"}
-                ))
+                fig_anomaly.add_trace(
+                    go.Scatter(
+                        x=anomaly_data["timestamp"],
+                        y=anomaly_data["Total kW"],
+                        mode="markers",
+                        name="Anomaly",
+                        marker={"color": "#EF4444", "size": 10, "symbol": "x"},
+                    )
+                )
 
             fig_anomaly.update_layout(
-                xaxis_title="Date/Time",
-                yaxis_title="Power (kW)",
-                hovermode="closest",
-                height=400
+                xaxis_title="Date/Time", yaxis_title="Power (kW)", hovermode="closest", height=400
             )
 
             st.plotly_chart(fig_anomaly, use_container_width=True)
@@ -987,9 +1195,7 @@ with tab7:
             if n_anomalies > 0:
                 st.markdown("### 🔍 Anomaly Details")
 
-                anomaly_table = anomaly_data[[
-                    "timestamp", "Total kW", "hour", "day_of_week"
-                ]].copy()
+                anomaly_table = anomaly_data[["timestamp", "Total kW", "hour", "day_of_week"]].copy()
 
                 if "Total kVA" in anomaly_table.columns:
                     anomaly_table["Total kVA"] = anomaly_data["Total kVA"]
@@ -1000,11 +1206,9 @@ with tab7:
                 anomaly_table = anomaly_table.sort_values("timestamp", ascending=False)
 
                 st.dataframe(
-                    anomaly_table.head(20).style.background_gradient(
-                        subset=["Total kW"],
-                        cmap="RdYlGn_r"
-                    ),
-                    use_container_width=True
+                    anomaly_table.head(20).style.background_gradient(subset=["Total kW"], cmap="RdYlGn_r"),
+                    use_container_width=True,
+                    hide_index=True,
                 )
 
                 # Patterns
@@ -1019,7 +1223,7 @@ with tab7:
                         x=hourly_anomalies.index,
                         y=hourly_anomalies.values,
                         labels={"x": "Hour of Day", "y": "Anomaly Count"},
-                        title="Anomalies by Hour"
+                        title="Anomalies by Hour",
                     )
                     st.plotly_chart(fig_hour, use_container_width=True)
 
@@ -1031,7 +1235,7 @@ with tab7:
                         x=[dow_names[i] for i in dow_anomalies.index],
                         y=dow_anomalies.values,
                         labels={"x": "Day of Week", "y": "Anomaly Count"},
-                        title="Anomalies by Day of Week"
+                        title="Anomalies by Day of Week",
                     )
                     st.plotly_chart(fig_dow, use_container_width=True)
 
@@ -1042,8 +1246,8 @@ with tab7:
                 top_hours = hourly_anomalies.nlargest(3)
                 if len(top_hours) > 0:
                     st.info(
-                        "🕐 Most anomalies occur at: " +
-                        ", ".join([f"{h:02d}:00 ({count} times)" for h, count in top_hours.items()])
+                        "🕐 Most anomalies occur at: "
+                        + ", ".join([f"{h:02d}:00 ({count} times)" for h, count in top_hours.items()])
                     )
 
                 # Weekend vs weekday
@@ -1061,7 +1265,7 @@ with tab7:
                 "📥 Download Anomalies CSV",
                 data=csv,
                 file_name=f"anomalies_{datetime.now(UTC).strftime('%Y%m%d')}.csv",
-                mime="text/csv"
+                mime="text/csv",
             )
 
         except ImportError:
@@ -1070,15 +1274,15 @@ with tab7:
     else:
         st.info("Need at least 24 hours of data for anomaly detection")
 
-# ── Tab 8: Raw Data ───────────────────────────────────────────────────────────
-with tab8:
+# ── Tab 7: Raw Data ───────────────────────────────────────────────────────────
+with tab7:
     col_a, col_b = st.columns(2)
     with col_a:
         st.subheader("Raw uploaded data")
-        st.dataframe(raw, use_container_width=True)
+        st.dataframe(raw, use_container_width=True, hide_index=True)
     with col_b:
         st.subheader("Pivoted (wide) data")
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
     st.download_button(
         "Download pivoted data as CSV",
