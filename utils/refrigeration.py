@@ -4,8 +4,8 @@ Zeto API integration module for retrieving premises and cabinet readings.
 
 import logging
 import os
+from collections.abc import Generator
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -62,7 +62,7 @@ def get_api_token() -> str:
     return token
 
 
-def _fetch_paginated_results(url: str, headers: Dict[str, str], params: Optional[Dict[str, str]] = None) -> List[Dict]:
+def _fetch_paginated_results(url: str, headers: dict[str, str], params: dict[str, str] | None = None) -> list[dict]:
     """
     Fetch all results from a paginated API endpoint.
 
@@ -114,10 +114,10 @@ def _fetch_paginated_results(url: str, headers: Dict[str, str], params: Optional
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to fetch paginated results: {str(e)}")
-        raise RefrigerationAPIError(f"Failed to fetch paginated results: {str(e)}")
+        raise RefrigerationAPIError(f"Failed to fetch paginated results: {str(e)}") from e
 
 
-def get_premises(company_id=23) -> List[Dict]:
+def get_premises(company_id=23) -> list[dict]:
     """
     Pull a list of premises from the Zeto API.
     Automatically handles pagination to retrieve all premises.
@@ -142,7 +142,7 @@ def get_premises(company_id=23) -> List[Dict]:
     return results
 
 
-def get_units_for_premises(premises_id: Optional[int] = None) -> List[Dict]:
+def get_units_for_premises(premises_id: int | None = None) -> list[dict]:
     """
     Pull a list of units from the Zeto API.
     Automatically handles pagination to retrieve all units.
@@ -173,11 +173,11 @@ def get_units_for_premises(premises_id: Optional[int] = None) -> List[Dict]:
 
 
 def get_cabinet_readings(
-    cabinet_id: str, start_date: datetime, end_date: datetime, sensors: Optional[List[int]] = None
-) -> List[Dict]:
+    cabinet_id: str, start_date: datetime, end_date: datetime, sensors: list[int] | None = None
+) -> Generator[list[dict]]:
     """
     Retrieve readings for a specific cabinet within a date range.
-    Returns all readings in a single response (not paginated).
+    Returns a generator that yields readings.
 
     Args:
         cabinet_id: The cabinet identifier
@@ -185,7 +185,7 @@ def get_cabinet_readings(
         end_date: End date for readings (inclusive)
         sensors: Optional list of sensor IDs to retrieve (defaults to [0])
 
-    Returns:
+    Yields:
         List[Dict]: List of readings for the specified cabinet
 
     Raises:
@@ -216,10 +216,7 @@ def get_cabinet_readings(
     from_timestamp = int(start_date.timestamp())
     to_timestamp = int(end_date.timestamp())
 
-    sensor_list = sensors or None
     params = {"from": str(from_timestamp), "to": str(to_timestamp), "langcode": "en-gb", "temperature_uom": "°C"}
-    # if sensor_list is not None:
-    #     params["sensors"]= ",".join(str(s) for s in sensor_list)
 
     logger.debug(f"Request URL: {url}")
     logger.debug(f"Request params: {params}")
@@ -251,12 +248,12 @@ def get_cabinet_readings(
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to retrieve cabinet readings for {cabinet_id}: {str(e)}")
-        raise RefrigerationAPIError(f"Failed to retrieve cabinet readings: {str(e)}")
+        raise RefrigerationAPIError(f"Failed to retrieve cabinet readings: {str(e)}") from e
 
 
 def get_all_cabinet_readings(
-    cabinet_ids: List[str], start_date: datetime, end_date: datetime, sensors: Optional[List[int]] = None
-) -> Dict[str, List[Dict]]:
+    cabinet_ids: list[str], start_date: datetime, end_date: datetime, sensors: list[int] | None = None
+) -> dict[str, list[dict]]:
     """
     Retrieve readings for multiple cabinets within a date range.
     Automatically handles pagination to retrieve all readings.
@@ -277,7 +274,10 @@ def get_all_cabinet_readings(
     results = {}
 
     for cabinet_id in cabinet_ids:
-        readings = get_cabinet_readings(cabinet_id, start_date, end_date, sensors)
-        results[cabinet_id] = readings
+        # Consume the generator and collect all readings
+        all_readings = []
+        for readings_batch in get_cabinet_readings(cabinet_id, start_date, end_date, sensors):
+            all_readings.extend(readings_batch)
+        results[cabinet_id] = all_readings
 
     return results
