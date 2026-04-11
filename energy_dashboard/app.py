@@ -104,18 +104,35 @@ st.sidebar.markdown("---")
 st.sidebar.header("Data Selection")
 st.sidebar.info(f"Gateway ID: {GATEWAY_ID}")
 
-# Date range selection
-# Data is from January 2026
-default_end = datetime(2026, 1, 29, tzinfo=UTC).date()
+# Date range selection - automatically defaults to previous full month
+today = datetime.now(UTC).date()
+
+# Calculate first day of previous month
+first_of_current_month = today.replace(day=1)
+last_day_of_prev_month = first_of_current_month - timedelta(days=1)
+first_day_of_prev_month = last_day_of_prev_month.replace(day=1)
+
+# Calculate number of days in previous month
+days_in_prev_month = (last_day_of_prev_month - first_day_of_prev_month).days + 1
+
+# Default to full previous month
+default_start = first_day_of_prev_month
+default_end = last_day_of_prev_month
+
 end_date = st.sidebar.date_input(
     "End Date",
     value=default_end,
 )
 
-days_back = st.sidebar.slider("Days to load", min_value=1, max_value=30, value=3)
-start_date = end_date - timedelta(days=days_back)
+days_back = st.sidebar.slider("Days to load", min_value=1, max_value=31, value=days_in_prev_month)
+start_date = end_date - timedelta(days=days_back - 1)  # -1 to include end_date
 
-st.sidebar.info(f"Date range: {start_date} to {end_date}")
+st.sidebar.info(f"Date range: {start_date} to {end_date} ({days_back} days)")
+
+# Show month name if loading a full month
+if days_back == days_in_prev_month and start_date == first_day_of_prev_month:
+    month_name = first_day_of_prev_month.strftime("%B %Y")
+    st.sidebar.success(f"📅 Loading full month: {month_name}")
 
 # Add a load data button to force refresh
 load_data = st.sidebar.button("🔄 Refresh Data", use_container_width=True, type="primary")
@@ -310,7 +327,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     [
         "Energy Overview",
         "Peak Demand",
-        "Load Heatmap",
+        "Load Analysis",
         "Efficiency Score",
         "Load Forecasting",
         "Anomaly Detection",
@@ -900,53 +917,358 @@ with tab2:
     else:
         st.info("Total kW data not available.")
 
-# ── Tab 3: Load Heatmap ───────────────────────────────────────────────────────
+# ── Tab 3: Load Profile Analysis ─────────────────────────────────────────────
 with tab3:
     if "Total kW" in df.columns:
-        st.subheader("Load heatmap — avg kW by hour and day")
-        df["date"] = df["timestamp"].dt.date
-        df["hour"] = df["timestamp"].dt.hour
-        pivot = df.pivot_table(values="Total kW", index="date", columns="hour", aggfunc="mean")
-        if pivot.shape[0] >= 2:
-            fig5 = px.imshow(
-                pivot,
-                aspect="auto",
-                color_continuous_scale="RdYlGn_r",
-                labels={"x": "Hour of Day", "y": "Date", "color": "Avg kW"},
+        st.subheader("⚡ Daily Load Profile Analysis")
+
+        st.markdown("""
+        Understand your energy consumption patterns throughout the day.
+        This helps identify opportunities for load shifting and cost savings.
+        """)
+
+        # Add time-based columns
+        df_profile = df.copy()
+        df_profile["hour"] = df_profile["timestamp"].dt.hour
+        df_profile["day_of_week"] = df_profile["timestamp"].dt.dayofweek
+        df_profile["day_name"] = df_profile["timestamp"].dt.day_name()
+        df_profile["is_weekend"] = df_profile["day_of_week"].isin([5, 6])
+
+        # 1. Average Hourly Load Profile (24-hour pattern)
+        st.markdown("### 📈 24-Hour Load Profile")
+
+        hourly_avg = df_profile.groupby("hour")["Total kW"].agg(["mean", "min", "max"]).reset_index()
+
+        fig_hourly = go.Figure()
+
+        # Add shaded area for min-max range
+        fig_hourly.add_trace(
+            go.Scatter(
+                x=hourly_avg["hour"],
+                y=hourly_avg["max"],
+                fill=None,
+                mode="lines",
+                line={"color": "rgba(59, 130, 246, 0.1)"},
+                showlegend=False,
+                hoverinfo="skip",
             )
-            st.plotly_chart(fig5, use_container_width=True)
+        )
+
+        fig_hourly.add_trace(
+            go.Scatter(
+                x=hourly_avg["hour"],
+                y=hourly_avg["min"],
+                fill="tonexty",
+                mode="lines",
+                line={"color": "rgba(59, 130, 246, 0.1)"},
+                fillcolor="rgba(59, 130, 246, 0.2)",
+                name="Min-Max Range",
+            )
+        )
+
+        # Average line
+        fig_hourly.add_trace(
+            go.Scatter(
+                x=hourly_avg["hour"],
+                y=hourly_avg["mean"],
+                mode="lines+markers",
+                name="Average Load",
+                line={"color": "#3B82F6", "width": 3},
+                marker={"size": 6},
+            )
+        )
+
+        # Add peak/off-peak background shading
+        # Day hours: 8-23, Night hours: 23-8
+        fig_hourly.add_vrect(
+            x0=8, x1=23,
+            fillcolor="rgba(255, 200, 0, 0.1)",
+            layer="below",
+            line_width=0,
+            annotation_text="Day Rate (08:00-23:00)",
+            annotation_position="top left",
+        )
+
+        fig_hourly.add_vrect(
+            x0=23, x1=24,
+            fillcolor="rgba(59, 130, 246, 0.1)",
+            layer="below",
+            line_width=0,
+        )
+
+        fig_hourly.add_vrect(
+            x0=0, x1=8,
+            fillcolor="rgba(59, 130, 246, 0.1)",
+            layer="below",
+            line_width=0,
+            annotation_text="Night Rate (23:00-08:00)",
+            annotation_position="top right",
+        )
+
+        fig_hourly.update_layout(
+            xaxis={
+                "title": "Hour of Day",
+                "dtick": 1,
+                "range": [-0.5, 23.5],
+            },
+            yaxis={"title": "Power (kW)"},
+            hovermode="x unified",
+            height=400,
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "center", "x": 0.5},
+        )
+
+        st.plotly_chart(fig_hourly, use_container_width=True)
+
+        # Show key insights
+        peak_hour = hourly_avg.loc[hourly_avg["mean"].idxmax(), "hour"]
+        peak_load = hourly_avg["mean"].max()
+        min_hour = hourly_avg.loc[hourly_avg["mean"].idxmin(), "hour"]
+        min_load = hourly_avg["mean"].min()
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Peak Hour", f"{int(peak_hour):02d}:00")
+        col2.metric("Peak Load", f"{peak_load:.1f} kW")
+        col3.metric("Minimum Hour", f"{int(min_hour):02d}:00")
+        col4.metric("Minimum Load", f"{min_load:.1f} kW")
+
+        # 2. Weekday vs Weekend Comparison
+        st.markdown("---")
+        st.markdown("### 📊 Weekday vs Weekend Pattern")
+
+        weekday_profile = df_profile[~df_profile["is_weekend"]].groupby("hour")["Total kW"].mean().reset_index()
+        weekend_profile = df_profile[df_profile["is_weekend"]].groupby("hour")["Total kW"].mean().reset_index()
+
+        fig_week = go.Figure()
+
+        fig_week.add_trace(
+            go.Scatter(
+                x=weekday_profile["hour"],
+                y=weekday_profile["Total kW"],
+                mode="lines+markers",
+                name="Weekday Average",
+                line={"color": "#3B82F6", "width": 3},
+                marker={"size": 6},
+            )
+        )
+
+        if len(weekend_profile) > 0:
+            fig_week.add_trace(
+                go.Scatter(
+                    x=weekend_profile["hour"],
+                    y=weekend_profile["Total kW"],
+                    mode="lines+markers",
+                    name="Weekend Average",
+                    line={"color": "#10B981", "width": 3, "dash": "dash"},
+                    marker={"size": 6},
+                )
+            )
+
+        fig_week.update_layout(
+            xaxis={"title": "Hour of Day", "dtick": 1},
+            yaxis={"title": "Power (kW)"},
+            hovermode="x unified",
+            height=400,
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "center", "x": 0.5},
+        )
+
+        st.plotly_chart(fig_week, use_container_width=True)
+
+        # Comparison metrics
+        weekday_avg = df_profile[~df_profile["is_weekend"]]["Total kW"].mean()
+        weekend_avg = df_profile[df_profile["is_weekend"]]["Total kW"].mean()
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Avg Weekday Load", f"{weekday_avg:.1f} kW")
+        col2.metric("Avg Weekend Load", f"{weekend_avg:.1f} kW")
+        if weekend_avg > 0:
+            diff_pct = ((weekday_avg - weekend_avg) / weekend_avg) * 100
+            col3.metric("Weekday vs Weekend", f"{diff_pct:+.1f}%")
+
+        # 3. Day-of-Week Breakdown
+        st.markdown("---")
+        st.markdown("### 📅 Load by Day of Week")
+
+        day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        daily_avg = (
+            df_profile.groupby("day_name")["Total kW"]
+            .agg(["mean", "max"])
+            .reindex(day_order)
+            .reset_index()
+        )
+
+        fig_daily = go.Figure()
+
+        fig_daily.add_trace(
+            go.Bar(
+                x=daily_avg["day_name"],
+                y=daily_avg["mean"],
+                name="Average Load",
+                marker_color=["#3B82F6" if day not in ["Saturday", "Sunday"] else "#10B981"
+                              for day in daily_avg["day_name"]],
+                text=daily_avg["mean"].round(1),
+                textposition="outside",
+            )
+        )
+
+        fig_daily.update_layout(
+            xaxis={"title": "Day of Week"},
+            yaxis={"title": "Average Power (kW)"},
+            height=400,
+        )
+
+        st.plotly_chart(fig_daily, use_container_width=True)
+
+        # 4. Load Distribution Throughout the Day
+        st.markdown("---")
+        st.markdown("### 🕐 Load Distribution by Time Period")
+
+        # Define time periods
+        def get_time_period(hour):
+            if 0 <= hour < 6:
+                return "Night (00:00-06:00)"
+            elif 6 <= hour < 9:
+                return "Morning (06:00-09:00)"
+            elif 9 <= hour < 12:
+                return "Mid-Morning (09:00-12:00)"
+            elif 12 <= hour < 14:
+                return "Lunch (12:00-14:00)"
+            elif 14 <= hour < 18:
+                return "Afternoon (14:00-18:00)"
+            elif 18 <= hour < 22:
+                return "Evening (18:00-22:00)"
+            else:
+                return "Late Night (22:00-24:00)"
+
+        df_profile["time_period"] = df_profile["hour"].apply(get_time_period)
+
+        period_order = [
+            "Night (00:00-06:00)",
+            "Morning (06:00-09:00)",
+            "Mid-Morning (09:00-12:00)",
+            "Lunch (12:00-14:00)",
+            "Afternoon (14:00-18:00)",
+            "Evening (18:00-22:00)",
+            "Late Night (22:00-24:00)",
+        ]
+
+        period_stats = (
+            df_profile.groupby("time_period")["Total kW"]
+            .agg(["mean", "max"])
+            .reindex(period_order)
+            .reset_index()
+        )
+
+        fig_periods = go.Figure()
+
+        fig_periods.add_trace(
+            go.Bar(
+                x=period_stats["time_period"],
+                y=period_stats["mean"],
+                name="Average",
+                marker_color="#3B82F6",
+            )
+        )
+
+        fig_periods.add_trace(
+            go.Scatter(
+                x=period_stats["time_period"],
+                y=period_stats["max"],
+                name="Peak",
+                mode="markers",
+                marker={"size": 12, "color": "#EF4444", "symbol": "diamond"},
+            )
+        )
+
+        fig_periods.update_layout(
+            xaxis={"title": "Time Period", "tickangle": -45},
+            yaxis={"title": "Power (kW)"},
+            height=450,
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "center", "x": 0.5},
+        )
+
+        st.plotly_chart(fig_periods, use_container_width=True)
+
+        # Insights
+        st.markdown("### 💡 Load Pattern Insights")
+
+        insights = []
+
+        # Check for high off-hours usage
+        night_usage = df_profile[df_profile["hour"].isin(range(0, 6))]["Total kW"].mean()
+        overall_avg = df_profile["Total kW"].mean()
+        if night_usage > overall_avg * 0.5:
+            insights.append(
+                f"⚠️ Significant night-time usage detected ({night_usage:.1f} kW average from 00:00-06:00). "
+                f"This is {(night_usage/overall_avg*100):.1f}% of your average load."
+            )
+
+        # Check for consistent load
+        load_variability = hourly_avg["mean"].std()
+        if load_variability < overall_avg * 0.2:
+            insights.append(
+                "✅ Your load is relatively consistent throughout the day, indicating steady operations."
+            )
         else:
-            st.info("Upload more than one day of data to see the heatmap.")
+            insights.append(
+                f"📊 Your load varies significantly throughout the day (std dev: {load_variability:.1f} kW). "
+                "Consider load shifting opportunities during off-peak hours."
+            )
+
+        # Peak vs off-peak comparison
+        day_hours_avg = df_profile[df_profile["hour"].isin(range(8, 23))]["Total kW"].mean()
+        night_hours_avg = df_profile[~df_profile["hour"].isin(range(8, 23))]["Total kW"].mean()
+
+        day_savings_rate = INDUSTRIAL_LEU_TARIFF["duos_day_rate"]
+        night_savings_rate = INDUSTRIAL_LEU_TARIFF["duos_night_rate"]
+        potential_savings = (day_savings_rate - night_savings_rate) * 100  # per 100 kWh shifted
+
+        if day_hours_avg > night_hours_avg * 1.2:
+            insights.append(
+                f"💰 Shifting load from day (€{day_savings_rate:.5f}/kWh) to night (€{night_savings_rate:.5f}/kWh) "
+                f"could save €{potential_savings:.2f} per 100 kWh shifted on DUoS charges alone."
+            )
+
+        for insight in insights:
+            st.info(insight)
+
     else:
         st.info("Total kW data not available.")
 
 # ── Tab 4: Efficiency Score Heatmap ───────────────────────────────────────────
 with tab4:
     if "Total kW" in df.columns and "Total kVA" in df.columns and "Average PF" in df.columns:
-        st.subheader("Daily efficiency score heatmap")
+        st.subheader("📊 Daily Efficiency Score Heatmap")
+
+        st.markdown("""
+        Track daily power efficiency based on Power Factor and real vs apparent power usage.
+        Higher scores indicate better electrical efficiency.
+        """)
+
+        # Work with a copy to avoid modifying original df
+        df_eff = df.copy()
 
         # Add date and time columns
-        df["date"] = df["timestamp"].dt.date
-        df["day_of_month"] = df["timestamp"].dt.day
-        df["month"] = df["timestamp"].dt.strftime("%B %Y")
+        df_eff["date"] = df_eff["timestamp"].dt.date
+        df_eff["day_of_month"] = df_eff["timestamp"].dt.day
+        df_eff["month"] = df_eff["timestamp"].dt.strftime("%B %Y")
 
         # Calculate time difference in hours for energy calculation
-        df["time_diff_hours"] = df["timestamp"].diff().dt.total_seconds() / 3600
-        df.loc[df["time_diff_hours"] < 0, "time_diff_hours"] = 0  # Handle negative diffs
-        df.loc[df["time_diff_hours"] > 1, "time_diff_hours"] = 0  # Ignore large gaps
+        df_eff["time_diff_hours"] = df_eff["timestamp"].diff().dt.total_seconds() / 3600
+        df_eff.loc[df_eff["time_diff_hours"] < 0, "time_diff_hours"] = 0
+        df_eff.loc[df_eff["time_diff_hours"] > 1, "time_diff_hours"] = 0
 
-        # Calculate energy consumption (kWh) using trapezoidal integration
-        df["kWh_interval"] = df["Total kW"] * df["time_diff_hours"]
+        # Calculate energy consumption (kWh)
+        df_eff["kWh_interval"] = df_eff["Total kW"] * df_eff["time_diff_hours"]
 
         # Group by day and calculate daily metrics
         daily_stats = (
-            df.groupby("date")
+            df_eff.groupby("date")
             .agg(
                 {
-                    "Average PF": "mean",  # Average power factor
-                    "Total kW": "mean",  # Average kW
-                    "Total kVA": "mean",  # Average kVA
-                    "kWh_interval": "sum",  # Total kWh consumed
+                    "Average PF": "mean",
+                    "Total kW": "mean",
+                    "Total kVA": "mean",
+                    "kWh_interval": "sum",
                     "day_of_month": "first",
                     "month": "first",
                 }
@@ -957,100 +1279,198 @@ with tab4:
         # Calculate efficiency score (0-100)
         # Based on: Power Factor (60%), kW/kVA ratio (40%)
         daily_stats["kW_kVA_ratio"] = daily_stats["Total kW"] / daily_stats["Total kVA"].replace(0, 1)
-        daily_stats["efficiency_score"] = ((daily_stats["Average PF"] * 60) + (daily_stats["kW_kVA_ratio"] * 40)).clip(
-            0, 100
-        )  # Ensure score stays within 0-100%
+        daily_stats["efficiency_score"] = (
+            (daily_stats["Average PF"] * 60) + (daily_stats["kW_kVA_ratio"] * 40)
+        ).clip(0, 100)
 
         # Round kWh for display
         daily_stats["kWh_display"] = daily_stats["kWh_interval"].round(1)
 
         if len(daily_stats) > 0:
-            # Create pivot table for heatmap - group by month
+            st.info(f"📅 Analyzing {len(daily_stats)} days of efficiency data")
+
+            # Create heatmap for each month
             for month in daily_stats["month"].unique():
-                month_data = daily_stats[daily_stats["month"] == month].copy()
+                month_data = daily_stats[daily_stats["month"] == month].copy().sort_values("day_of_month")
 
                 st.markdown(f"### {month}")
 
-                # Determine grid size (assume max 31 days, arrange in 5 rows x 7 cols)
-                max_day = month_data["day_of_month"].max()
-
-                # Create a calendar-style layout
-                # Pivot with day_of_month as both index and value
-                heatmap_data = month_data.set_index("day_of_month")
-
-                # Create annotations with kWh values
-                annotations = []
-                for _, row in month_data.iterrows():
-                    annotations.append(
-                        {
-                            "x": row["day_of_month"],
-                            "y": 0,
-                            "text": f"{row['kWh_display']}<br>kWh",
-                            "showarrow": False,
-                            "font": {"size": 10, "color": "white"},
-                        }
-                    )
-
-                # Create heatmap
+                # Create heatmap with white-to-red color scale
                 fig_eff = go.Figure(
                     data=go.Heatmap(
                         x=month_data["day_of_month"],
-                        y=["Efficiency"] * len(month_data),
+                        y=["Efficiency Score"] * len(month_data),
                         z=month_data["efficiency_score"],
-                        text=month_data["kWh_display"],
-                        texttemplate="Day %{x}<br>%{text} kWh<br>Score: %{z:.1f}",
-                        textfont={"size": 10},
-                        colorscale="RdYlGn",  # Red (low) to Green (high)
-                        zmid=85,  # Center the colorscale at 85% efficiency
-                        zmin=70,
+                        text=month_data.apply(
+                            lambda row: f"Day {row['day_of_month']}<br>"
+                            f"{row['kWh_display']:.1f} kWh<br>"
+                            f"Score: {row['efficiency_score']:.1f}%<br>"
+                            f"PF: {row['Average PF']:.3f}",
+                            axis=1,
+                        ),
+                        hovertemplate="%{text}<extra></extra>",
+                        texttemplate="Day %{x}<br>%{z:.0f}%",
+                        textfont={"size": 9, "color": "black"},
+                        colorscale=[
+                            [0.0, "rgb(178, 34, 34)"],    # Dark red (low/bad)
+                            [0.5, "rgb(255, 160, 122)"],  # Light red (medium)
+                            [1.0, "rgb(255, 255, 255)"],  # White (high/good)
+                        ],
+                        reversescale=True,  # Reverse so white = max (good)
+                        zmin=60,
                         zmax=100,
-                        colorbar={"title": "Efficiency<br>Score", "ticksuffix": "%"},
+                        colorbar={
+                            "title": "Efficiency<br>Score (%)",
+                            "tickmode": "linear",
+                            "tick0": 60,
+                            "dtick": 10,
+                        },
                     )
                 )
 
                 fig_eff.update_layout(
-                    xaxis={"title": "Day of Month", "dtick": 1},
+                    xaxis={"title": "Day of Month", "dtick": 1, "range": [0.5, month_data["day_of_month"].max() + 0.5]},
                     yaxis={"title": "", "showticklabels": False},
                     height=200,
+                    margin={"t": 40, "b": 40},
                 )
 
                 st.plotly_chart(fig_eff, use_container_width=True)
 
-                # Show statistics table
+                # Show statistics
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Avg Efficiency Score", f"{month_data['efficiency_score'].mean():.1f}%")
-                col2.metric("Total Energy", f"{month_data['kWh_interval'].sum():.1f} kWh")
-                col3.metric("Avg Power Factor", f"{month_data['Average PF'].mean():.3f}")
-                col4.metric(
-                    "Best Day", f"Day {month_data.loc[month_data['efficiency_score'].idxmax(), 'day_of_month']}"
+                avg_score = month_data["efficiency_score"].mean()
+                total_kwh = month_data["kWh_interval"].sum()
+                avg_pf = month_data["Average PF"].mean()
+                best_day_idx = month_data["efficiency_score"].idxmax()
+                best_day = month_data.loc[best_day_idx, "day_of_month"]
+                best_score = month_data.loc[best_day_idx, "efficiency_score"]
+
+                col1.metric("Avg Efficiency Score", f"{avg_score:.1f}%")
+                col2.metric("Total Energy", f"{total_kwh:,.1f} kWh")
+                col3.metric("Avg Power Factor", f"{avg_pf:.3f}")
+                col4.metric("Best Day", f"Day {int(best_day)}", delta=f"{best_score:.1f}%")
+
+                # Show distribution chart
+                st.markdown("#### Score Distribution")
+
+                fig_dist = go.Figure()
+
+                fig_dist.add_trace(
+                    go.Bar(
+                        x=month_data["day_of_month"],
+                        y=month_data["efficiency_score"],
+                        marker_color=month_data["efficiency_score"],
+                        marker_colorscale=[
+                            [0.0, "rgb(178, 34, 34)"],
+                            [0.5, "rgb(255, 160, 122)"],
+                            [1.0, "rgb(255, 255, 255)"],
+                        ],
+                        marker_cmin=60,
+                        marker_cmax=100,
+                        marker_reversescale=True,
+                        text=month_data["efficiency_score"].round(1),
+                        textposition="outside",
+                        showlegend=False,
+                    )
                 )
 
+                fig_dist.update_layout(
+                    xaxis={"title": "Day of Month", "dtick": 1},
+                    yaxis={"title": "Efficiency Score (%)", "range": [0, 105]},
+                    height=300,
+                )
+
+                st.plotly_chart(fig_dist, use_container_width=True)
+
+                st.markdown("---")
+
         else:
-            st.info("Need at least one day of data to calculate efficiency scores")
+            st.warning("⚠️ No data available to calculate efficiency scores")
 
         # Efficiency score explanation
         with st.expander("ℹ️ How is efficiency score calculated?"):
             st.markdown("""
-            **Efficiency Score Calculation:**
+            **Efficiency Score Calculation Formula:**
 
-            The efficiency score (0-100%) is calculated as a weighted combination of:
+            ```
+            Efficiency Score = (Power Factor × 60) + (kW/kVA Ratio × 40)
+            ```
+
+            Where:
+            - **Power Factor** = Average PF for the day (0 to 1.0)
+            - **kW/kVA Ratio** = Average Real Power ÷ Average Apparent Power for the day
+
+            **Example Calculation:**
+            ```
+            Day 15:
+              • Average Power Factor = 0.97
+              • Average kW = 245.3
+              • Average kVA = 252.9
+              • kW/kVA Ratio = 245.3 ÷ 252.9 = 0.97
+
+            Efficiency Score = (0.97 × 60) + (0.97 × 40)
+                            = 58.2 + 38.8
+                            = 97.0%
+            ```
+
+            **Component Weights:**
 
             1. **Power Factor (60% weight)**: Measures how effectively electrical power is converted into useful work
                - Target: ≥0.90 (90%)
                - Higher is better
+               - Represents the ratio of real power to apparent power
 
             2. **kW/kVA Ratio (40% weight)**: Real power vs apparent power ratio
                - Indicates how much of the supplied power is actually used
+               - Should be close to Power Factor for balanced systems
                - Higher is better
 
             **Color Coding:**
-            - 🟢 Green (90-100%): Excellent efficiency
-            - 🟡 Yellow (80-90%): Good efficiency
-            - 🟠 Orange (70-80%): Fair efficiency
-            - 🔴 Red (<70%): Poor efficiency - investigate power quality issues
+            - ⚪ White (90-100%): Excellent efficiency
+            - 🟠 Light Red (80-90%): Good efficiency
+            - 🔴 Red (70-80%): Fair efficiency
+            - 🔴 Dark Red (<70%): Poor efficiency - investigate power quality issues
 
-            **Daily kWh:** Shows total energy consumed each day
+            **Score Ranges:**
+            - **90-100%**: Excellent - optimal electrical efficiency, minimal reactive power
+            - **80-90%**: Good - minor improvements possible, consider power factor optimization
+            - **70-80%**: Fair - power factor correction recommended, potential savings available
+            - **Below 70%**: Poor - urgent attention needed, significant reactive power issues
+
+            **What affects your score:**
+            - Inductive loads (motors, transformers) without correction lower Power Factor
+            - Unbalanced loads reduce efficiency
+            - Harmonic distortion from non-linear loads
+            - Oversized equipment running at low load
             """)
+
+            # Show calculation for a sample day if data exists
+            if len(daily_stats) > 0:
+                st.markdown("---")
+                st.markdown("**Sample Calculation from Your Data:**")
+
+                # Get a random day from the middle
+                sample_idx = len(daily_stats) // 2
+                sample_day = daily_stats.iloc[sample_idx]
+
+                pf = sample_day["Average PF"]
+                kw = sample_day["Total kW"]
+                kva = sample_day["Total kVA"]
+                ratio = sample_day["kW_kVA_ratio"]
+                score = sample_day["efficiency_score"]
+
+                st.code(f"""
+Day {int(sample_day['day_of_month'])} ({sample_day['date']}):
+  • Average Power Factor = {pf:.4f}
+  • Average kW = {kw:.2f}
+  • Average kVA = {kva:.2f}
+  • kW/kVA Ratio = {kw:.2f} ÷ {kva:.2f} = {ratio:.4f}
+
+Efficiency Score = ({pf:.4f} × 60) + ({ratio:.4f} × 40)
+                = {pf*60:.2f} + {ratio*40:.2f}
+                = {score:.2f}%
+                """, language="text")
     else:
         st.info("Power Factor or kW/kVA data not available for efficiency calculation")
 
