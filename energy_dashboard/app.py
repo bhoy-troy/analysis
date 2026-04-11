@@ -37,6 +37,34 @@ def login_page():
     st.title("🔒 Energy Dashboard Login")
     st.markdown("Please enter your credentials to access the dashboard")
 
+    # Custom CSS for green login button
+    st.markdown("""
+        <style>
+        /* Target the login form submit button */
+        div.stForm button[type="submit"],
+        div.stForm button[kind="primaryFormSubmit"],
+        div.stForm button[kind="formSubmit"] {
+            background-color: #10b981 !important;
+            color: white !important;
+            border: none !important;
+        }
+        div.stForm button[type="submit"]:hover,
+        div.stForm button[kind="primaryFormSubmit"]:hover,
+        div.stForm button[kind="formSubmit"]:hover {
+            background-color: #059669 !important;
+            color: white !important;
+        }
+        /* Additional selector for Streamlit's button class */
+        .stForm button {
+            background-color: #10b981 !important;
+            color: white !important;
+        }
+        .stForm button:hover {
+            background-color: #059669 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     with st.form("login_form"):
         username = st.text_input("Username", key="login_username")
         password = st.text_input("Password", type="password", key="login_password")
@@ -763,7 +791,7 @@ with tab1:
                 barmode="group",
                 xaxis_title="",
                 yaxis_title="Value",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "center", "x": 0.5},
                 height=400,
             )
 
