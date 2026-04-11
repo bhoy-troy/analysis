@@ -95,12 +95,6 @@ st.title("Energy Usage Dashboard")
 st.caption("Connected Resource & Energy Intelligence Monitoring")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
-st.sidebar.header("Configuration")
-MIC = st.sidebar.number_input("MIC (Maximum Import Capacity) kW", value=MIC_DEFAULT, step=10)
-demand_warning_pct = st.sidebar.slider("Demand warning threshold (% of MIC)", 70, 95, 90)
-pf_target = st.sidebar.slider("Power factor target", 0.80, 1.00, 0.90, step=0.01)
-
-st.sidebar.markdown("---")
 st.sidebar.header("Data Selection")
 st.sidebar.info(f"Gateway ID: {GATEWAY_ID}")
 
@@ -136,6 +130,12 @@ if days_back == days_in_prev_month and start_date == first_day_of_prev_month:
 
 # Add a load data button to force refresh
 load_data = st.sidebar.button("🔄 Refresh Data", use_container_width=True, type="primary")
+
+st.sidebar.markdown("---")
+st.sidebar.header("Configuration")
+MIC = st.sidebar.number_input("MIC (Maximum Import Capacity) kW", value=MIC_DEFAULT, step=10)
+demand_warning_pct = st.sidebar.slider("Demand warning threshold (% of MIC)", 70, 95, 90)
+pf_target = st.sidebar.slider("Power factor target", 0.80, 1.00, 0.90, step=0.01)
 
 # Tariff Information
 st.sidebar.markdown("---")
