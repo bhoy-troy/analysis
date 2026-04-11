@@ -2,6 +2,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import extra_streamlit_components as stx
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -23,12 +24,37 @@ PASSWORD = "energy"
 
 st.set_page_config(page_title="Energy Dashboard", layout="wide")
 
+# Initialize cookie manager
+cookie_manager = stx.CookieManager()
 
 # ── Authentication ────────────────────────────────────────────────────────────
 def check_authentication():
-    """Check if user is authenticated."""
+    """Check if user is authenticated via session state or cookie."""
+    # First check session state
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+
+    # If not authenticated in session, check cookie
+    if not st.session_state.authenticated:
+        # Get all cookies (this is async, need to check if ready)
+        auth_cookie = cookie_manager.get("energy_auth")
+
+        if auth_cookie:
+            # Check if cookie has valid timestamp and hasn't expired
+            try:
+                login_time = float(auth_cookie)
+                current_time = datetime.now(UTC).timestamp()
+
+                # Check if less than 60 minutes (3600 seconds) have passed
+                if (current_time - login_time) < 3600:
+                    st.session_state.authenticated = True
+                else:
+                    # Cookie expired, remove it
+                    cookie_manager.delete("energy_auth")
+            except (ValueError, TypeError):
+                # Invalid cookie format, ignore
+                pass
+
     return st.session_state.authenticated
 
 
@@ -72,7 +98,17 @@ def login_page():
 
         if submit:
             if username == USERNAME and password == PASSWORD:
+                # Set session state
                 st.session_state.authenticated = True
+
+                # Set cookie with current timestamp (expires in 60 minutes)
+                login_timestamp = str(datetime.now(UTC).timestamp())
+                cookie_manager.set(
+                    "energy_auth",
+                    login_timestamp,
+                    expires_at=datetime.now(UTC) + timedelta(minutes=60),
+                )
+
                 st.success("✅ Login successful!")
                 st.rerun()
             else:
@@ -80,8 +116,12 @@ def login_page():
 
 
 def logout():
-    """Logout user."""
+    """Logout user and clear authentication cookie."""
     st.session_state.authenticated = False
+
+    # Clear the authentication cookie
+    cookie_manager.delete("energy_auth")
+
     st.rerun()
 
 
