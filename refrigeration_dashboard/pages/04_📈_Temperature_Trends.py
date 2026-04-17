@@ -40,7 +40,7 @@ if len(date_range) == 2:
             y=filtered_df["temperature_celsius"],
             mode="lines",
             name="Temperature",
-            line=dict(color="blue", width=1),
+            line={"color": "blue", "width": 1},
         )
     )
 
@@ -64,7 +64,7 @@ if len(date_range) == 2:
             y=hourly_avg["mean"],
             mode="lines+markers",
             name="Average",
-            line=dict(color="green", width=2),
+            line={"color": "green", "width": 2},
         )
     )
     fig.add_trace(
@@ -72,7 +72,7 @@ if len(date_range) == 2:
             x=hourly_avg["hour"],
             y=hourly_avg["mean"] + hourly_avg["std"],
             mode="lines",
-            line=dict(width=0),
+            line={"width": 0},
             showlegend=False,
         )
     )
@@ -81,7 +81,7 @@ if len(date_range) == 2:
             x=hourly_avg["hour"],
             y=hourly_avg["mean"] - hourly_avg["std"],
             mode="lines",
-            line=dict(width=0),
+            line={"width": 0},
             fillcolor="rgba(0,100,80,0.2)",
             fill="tonexty",
             name="±1 Std Dev",

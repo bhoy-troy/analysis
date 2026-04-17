@@ -12,6 +12,10 @@ sys.path.append("..")
 import importlib.util
 
 spec = importlib.util.spec_from_file_location("pdf_funcs", "app_cobh_analysis.py")
+if spec is None or spec.loader is None:
+    st.error("Could not load PDF generation module")
+    st.stop()
+
 pdf_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pdf_module)
 

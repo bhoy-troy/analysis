@@ -1,48 +1,41 @@
 """
-Energia Tariff Configuration
-Extracted from Energia bills for POLAR ICE LTD
+Tariff Configuration
+
 """
 
-# Tariff: Industrial (LEU) - Main site MPRN 10000070022
-# Contract ends: 31 Oct 2025
+# Tariff: Industrial (LEU) -
+
 # Maximum Import Capacity: 290 kVA
 
 INDUSTRIAL_LEU_TARIFF = {
     "name": "Industrial (LEU)",
     "contract_end": "2025-10-31",
     "max_import_capacity_kva": 290,
-
     # Energy charges (€/kWh)
     "energy_rate": 0.124178,  # Base energy charge
-
     # Distribution Use of System (DUoS) charges
     "duos_standing_charge_monthly": 401.41,  # Fixed monthly charge
     "duos_capacity_charge_per_kva": 2.8948,  # Per kVA of capacity
     "duos_peak_rate": 0.01513,  # €/kWh during peak (specific hours)
     "duos_day_rate": 0.01376,  # €/kWh during day (off-peak)
     "duos_night_rate": 0.00219,  # €/kWh during night
-
     # Transmission Use of System (TUoS) charges
     "demand_network_capacity_per_mwh": 7.3865,  # €/MWh
     "tuos_day_rate_per_mwh": 31.0312,  # €/MWh
     "tuos_night_rate_per_mwh": 31.0312,  # €/MWh
-
     # Supplier charges
     "supplier_capacity_charge_monthly": 826.62,  # Fixed monthly charge
-
     # Market charges (€/kWh)
     "capacity_socialisation_charge": -0.0003609,  # Credit
     "imperfections_charge": 0.01462,
     "market_operator_charge": 0.000641,
     "currency_adjustment_charge": 0.000015,
-
     # Levies and taxes
     "pso_levy_monthly": 455.30,  # Public Service Obligation - fixed monthly
     "eeos_charge": 0.0013,  # Energy Efficiency Obligation Scheme
     "eeos_credit": -0.0013,  # EEOS credit (net zero)
     "electricity_tax": 0.001,  # €/kWh
     "vat_rate": 0.09,  # 9%
-
     # Time-of-Use periods (Ireland)
     "peak_hours": [8, 9, 10, 17, 18, 19],  # Peak hours (example, verify from contract)
     "day_hours": list(range(8, 23)),  # 08:00 - 23:00
@@ -59,29 +52,23 @@ NIGHT_SAVER_TARIFF = {
     "name": "Wholesale Energy - General Purpose Night Saver",
     "contract_end": "2026-03-31",
     "max_import_capacity_kva": 15,
-
     # Standing charge
     "standing_charge_per_day": 0.354,  # €/day
-
     # Wholesale energy costs (€/kWh)
     "day_wholesale_energy": 0.1472059,
     "night_wholesale_energy": 0.1342857,
-
     # UoS and Market costs (€/kWh)
     "day_uos_market": 0.1261765,
     "night_uos_market": 0.0560714,
-
     # Supplier charges
     "supplier_capacity_charge_7am_11pm": 0.02123,  # €/kWh during 7am-11pm
     "capacity_socialisation_charge_7am_11pm": -0.0003609,  # Credit during 7am-11pm
-
     # Levies and taxes
     "pso_levy_monthly": 12.91,  # Fixed monthly charge
     "eeos_charge": 0.0013,
     "eeos_credit": -0.0013,
     "electricity_tax": 0.001,  # €/kWh
     "vat_rate": 0.09,  # 9%
-
     # Time periods
     "day_hours": list(range(8, 23)),  # 08:00 - 23:00
     "night_hours": list(range(0, 8)) + [23],  # 23:00 - 08:00
@@ -231,9 +218,15 @@ def calculate_detailed_cost_breakdown(df, tariff=INDUSTRIAL_LEU_TARIFF, days_in_
 
     # Calculate costs for each time period
     total_costs = {
-        "peak": 0, "day": 0, "night": 0,
-        "energy_charge": 0, "network_charges": 0, "supplier_charges": 0,
-        "market_charges": 0, "levies": 0, "taxes": 0
+        "peak": 0,
+        "day": 0,
+        "night": 0,
+        "energy_charge": 0,
+        "network_charges": 0,
+        "supplier_charges": 0,
+        "market_charges": 0,
+        "levies": 0,
+        "taxes": 0,
     }
 
     breakdown = {}

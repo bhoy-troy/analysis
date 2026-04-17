@@ -1,12 +1,15 @@
 """Equipment Health Score page - Predictive Maintenance"""
 
 import sys
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-sys.path.append("..")
+# Add parent directory to path to import utils
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 from utils.calculations import (
     calculate_health_score,
     calculate_recovery_time,

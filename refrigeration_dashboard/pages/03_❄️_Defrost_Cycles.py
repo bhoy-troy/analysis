@@ -1,12 +1,15 @@
 """Defrost Cycles Analysis page"""
 
 import sys
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-sys.path.append("..")
+# Add parent directory to path to import utils
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 from utils.calculations import calculate_recovery_time, detect_defrost_cycles
 
 st.title("❄️ Defrost Cycles Analysis")
